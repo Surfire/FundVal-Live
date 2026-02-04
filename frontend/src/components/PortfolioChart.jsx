@@ -1,5 +1,6 @@
 import React from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { RefreshCw } from 'lucide-react';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
 
@@ -18,29 +19,20 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
   );
 };
 
-export const PortfolioChart = ({ positions }) => {
+const getRateColor = (rate) => {
+  if (rate > 0) return 'text-red-500';
+  if (rate < 0) return 'text-green-500';
+  return 'text-slate-500';
+};
+
+export const PortfolioChart = ({ positions, summary, loading, onRefresh }) => {
   if (!positions || positions.length === 0) return null;
 
-  // Group by 'type' (sector)
-  // Logic: Use existing 'type' from fund info, or infer.
-  // Since 'positions' from backend currently might not have 'type', we might need to rely on 'name' grouping or update backend.
-  // Wait, `get_all_positions` calls `get_combined_valuation` which returns `type`. 
-  // Let's verify backend response structure. `services/account.py` calls `get_combined_valuation`.
-  // `get_combined_valuation` returns `type: sector` based on `MAJOR_CATEGORIES`.
-  // Wait, `get_fund_intraday` does the sector logic, `get_combined_valuation` only does prices.
-  // **CRITICAL FIX**: `account.py` needs to populate `type`.
-
-  // Assuming backend will be fixed to provide 'type'. 
-  // For now, let's group by `name` keywords as a fallback or if `type` is missing.
-  
-  // Let's group by type if available, otherwise by name keywords (mock logic for now).
   const dataMap = {};
-  
+
   positions.forEach(p => {
-    // Fallback classification if backend type is missing
     let type = p.type || "其他";
-    
-    // Simple frontend classification fallback
+
     if (!p.type) {
         if (p.name.includes("债")) type = "债券";
         else if (p.name.includes("指数") || p.name.includes("ETF") || p.name.includes("股票")) type = "权益";
@@ -59,12 +51,50 @@ export const PortfolioChart = ({ positions }) => {
   })).sort((a, b) => b.value - a.value);
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-80 flex flex-col">
-      <h3 className="text-sm font-bold text-slate-700 mb-4 uppercase tracking-wider">资产分布</h3>
-      <div className="flex-1 w-full min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">资产概览</h3>
+        <button
+          onClick={onRefresh}
+          className="p-2 bg-slate-50 border border-slate-200 rounded-full hover:bg-slate-100 transition-colors text-slate-500 hover:text-blue-600"
+          title="刷新数据"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      <div className="flex gap-6">
+        {/* 左侧：统计数据 */}
+        <div className="flex flex-col gap-4 min-w-[240px]">
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-slate-500 font-medium uppercase tracking-wider">预估总资产</div>
+            <div className="text-2xl font-bold text-slate-800">
+              ¥{(summary?.total_market_value || 0).toLocaleString()}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-slate-500 font-medium uppercase tracking-wider">预估总盈亏</div>
+            <div className={`text-2xl font-bold ${getRateColor(summary?.total_income || 0)}`}>
+              {(summary?.total_income || 0) > 0 ? '+' : ''}¥{(summary?.total_income || 0).toLocaleString()}
+            </div>
+            <div className={`text-sm font-medium ${getRateColor(summary?.total_income || 0)}`}>
+              {(summary?.total_return_rate || 0) > 0 ? '+' : ''}{(summary?.total_return_rate || 0).toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-slate-500 font-medium uppercase tracking-wider">当日预估盈亏</div>
+            <div className={`text-2xl font-bold ${getRateColor(summary?.total_day_income || 0)}`}>
+              {(summary?.total_day_income || 0) > 0 ? '+' : ''}¥{(summary?.total_day_income || 0).toLocaleString()}
+            </div>
+          </div>
+        </div>
+
+        {/* 右侧：饼图 */}
+        <div className="flex-1 min-h-[280px]">
+          <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-            <Pie
+              <Pie
                 data={data}
                 cx="50%"
                 cy="50%"
@@ -74,18 +104,19 @@ export const PortfolioChart = ({ positions }) => {
                 fill="#8884d8"
                 dataKey="value"
                 paddingAngle={2}
-            >
+              >
                 {data.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
-            </Pie>
-            <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }}/>
-            <Tooltip 
+              </Pie>
+              <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }}/>
+              <Tooltip
                 formatter={(value) => `¥${value.toLocaleString()}`}
                 contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-            />
+              />
             </PieChart>
-        </ResponsiveContainer>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );

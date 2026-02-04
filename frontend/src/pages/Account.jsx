@@ -121,39 +121,12 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading 
         </div>
       )}
 
-      {/* 1. Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <SummaryCard 
-          label="预估总资产" 
-          value={`¥${(summary.total_market_value || 0).toLocaleString()}`} 
-        />
-        <SummaryCard 
-          label="预估总盈亏" 
-          value={`¥${(summary.total_income || 0).toLocaleString()}`} 
-          subValue={`${(summary.total_return_rate || 0).toFixed(2)}%`}
-          isPositive={summary.total_income > 0}
-        />
-        <SummaryCard 
-          label="当日预估盈亏" 
-          value={`¥${(summary.total_day_income || 0).toLocaleString()}`} 
-          isPositive={summary.total_day_income > 0}
-        />
-        <div className="flex items-center justify-end md:justify-center">
-            <button 
-                onClick={fetchData} 
-                className="p-3 bg-white border border-slate-200 rounded-full hover:bg-slate-50 transition-colors shadow-sm text-slate-500 hover:text-blue-600"
-            >
-                <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-        </div>
-      </div>
-
-      {/* 2. Portfolio Visualization */}
+      {/* 1. Portfolio Overview with Summary */}
       <div className="w-full">
-        <PortfolioChart positions={positions} />
+        <PortfolioChart positions={positions} summary={summary} loading={loading} onRefresh={fetchData} />
       </div>
 
-      {/* 3. Actions */}
+      {/* 2. Actions */}
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-bold text-slate-800">持仓明细</h2>
         <div className="flex gap-2">
@@ -177,18 +150,18 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading 
       </div>
 
       {/* 3. Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-          <table className="w-full text-base text-left">
-            <thead className="bg-slate-50 text-slate-500 font-medium text-xs uppercase tracking-wider sticky top-0 z-10 shadow-sm">
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+        <div>
+          <table className="w-full text-base text-left border-collapse">
+            <thead className="bg-slate-50 text-slate-500 font-medium text-xs uppercase tracking-wider sticky top-[73px] z-30 shadow-sm">
               <tr>
-                <th className="px-4 py-3 text-left">基金</th>
-                <th className="px-4 py-3 text-right">净值 | 估值</th>
-                <th className="px-4 py-3 text-right">份额 | 成本</th>
-                <th className="px-4 py-3 text-right">持有收益</th>
-                <th className="px-4 py-3 text-right">当日预估</th>
-                <th className="px-4 py-3 text-right">预估总值</th>
-                <th className="px-4 py-3 text-center">操作</th>
+                <th className="px-4 py-3 text-left border-b border-slate-100 bg-slate-50 rounded-tl-xl">基金</th>
+                <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">净值 | 估值</th>
+                <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">份额 | 成本</th>
+                <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">持有收益</th>
+                <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">当日预估</th>
+                <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">预估总值</th>
+                <th className="px-4 py-3 text-center border-b border-slate-100 bg-slate-50 rounded-tr-xl">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-base">
