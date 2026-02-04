@@ -1,5 +1,8 @@
 # FundVal Live
 
+![GitHub stars](https://img.shields.io/github/stars/Ye-Yu-Mo/FundVal-Live?style=social)
+![GitHub views](https://komarev.com/ghpvc/?username=Ye-Yu-Mo&repo=FundVal-Live&color=blue&style=flat-square&label=views)
+
 **盘中基金实时估值与逻辑审计系统**
 
 拒绝黑箱，拒绝情绪化叙事。基于透明的持仓穿透 + 实时行情加权计算 + 硬核数学模型，让基金估值回归数学事实。
@@ -12,7 +15,7 @@
 ![Dashboard](docs/汇总页面.png)
 
 ### 持仓管理
-![alt text](image-1.png)
+![alt text](docs/image-1.png)
 
 ### 技术指标审计
 ![Technical Indicators](docs/基金详情-技术指标.png)
@@ -146,3 +149,9 @@ flowchart TB
 ## 免责声明
 
 本项目提供的数据与分析仅供技术研究使用，不构成任何投资建议。市场有风险，代码无绝对，交易需谨慎。
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Ye-Yu-Mo/FundVal-Live&type=Date)](https://star-history.com/#Ye-Yu-Mo/FundVal-Live&Date)
