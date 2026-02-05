@@ -25,22 +25,4 @@ else
     echo "No backend PID file found."
 fi
 
-# Kill Frontend
-if [ -f "frontend.pid" ]; then
-    PID=$(cat frontend.pid)
-    if ps -p $PID > /dev/null; then
-        kill $PID
-        echo -e "Frontend (PID: $PID) stopped."
-    else
-        echo -e "${RED}Frontend process $PID not found.${NC}"
-    fi
-    rm frontend.pid
-else
-    echo "No frontend PID file found."
-fi
-
-# Cleanup heavy processes just in case (optional, safe for dev env)
-# pkill -f "uvicorn app.main:app"
-# pkill -f "vite"
-
 echo -e "${GREEN}>>> All services stopped.${NC}"

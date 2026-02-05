@@ -112,7 +112,7 @@ tail -f logs/backend.log
 
 #### 3. 访问
 
-打开浏览器访问 `http://localhost:5173`
+打开浏览器访问 `http://localhost:21345`
 
 ---
 
