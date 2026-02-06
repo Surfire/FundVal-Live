@@ -126,10 +126,22 @@ sudo dpkg -i fundval-live_*_amd64.deb
 
 #### 2. 启动服务
 
-**方式 A：使用预构建镜像（推荐）**
+**快速体验（最简启动）**
 
 ```bash
-# 直接运行（无需克隆代码）
+# 拉取镜像
+docker pull ghcr.io/ye-yu-mo/fundval-live:latest
+
+# 启动服务（无 AI 分析）
+docker run -d -p 21345:21345 ghcr.io/ye-yu-mo/fundval-live:latest
+
+# 访问 http://localhost:21345
+```
+
+**完整配置（推荐生产环境）**
+
+```bash
+# 带数据持久化 + AI 分析
 docker run -d \
   --name fundval-live \
   -p 21345:21345 \
@@ -143,7 +155,7 @@ wget https://raw.githubusercontent.com/Ye-Yu-Mo/FundVal-Live/main/docker-compose
 docker-compose up -d
 ```
 
-**方式 B：本地构建**
+**本地构建（开发者）**
 
 ```bash
 # 克隆项目
