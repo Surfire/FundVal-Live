@@ -154,6 +154,118 @@ def init_db():
         cursor.execute("DROP TABLE IF EXISTS valuation_accuracy")
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
 
+    # Migration: Multi-account support
+    if current_version < 2:
+        logger.info("Running migration: adding multi-account support")
+
+        # 1. Create accounts table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 2. Insert default account
+        cursor.execute("""
+            INSERT OR IGNORE INTO accounts (id, name, description)
+            VALUES (1, '默认账户', '系统默认账户')
+        """)
+
+        # 3. Check if positions table needs migration
+        cursor.execute("PRAGMA table_info(positions)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if 'account_id' not in columns:
+            logger.info("Migrating positions table to multi-account")
+
+            # Backup old data
+            cursor.execute("SELECT code, cost, shares, updated_at FROM positions")
+            old_positions = cursor.fetchall()
+
+            # Drop old table
+            cursor.execute("DROP TABLE positions")
+
+            # Create new table with account_id
+            cursor.execute("""
+                CREATE TABLE positions (
+                    account_id INTEGER NOT NULL DEFAULT 1,
+                    code TEXT NOT NULL,
+                    cost REAL NOT NULL DEFAULT 0.0,
+                    shares REAL NOT NULL DEFAULT 0.0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (account_id, code),
+                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+                )
+            """)
+
+            # Restore data with default account_id = 1
+            for row in old_positions:
+                cursor.execute("""
+                    INSERT INTO positions (account_id, code, cost, shares, updated_at)
+                    VALUES (1, ?, ?, ?, ?)
+                """, row)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_code ON positions(code)")
+
+        # 4. Check if transactions table needs migration
+        cursor.execute("PRAGMA table_info(transactions)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if 'account_id' not in columns:
+            logger.info("Migrating transactions table to multi-account")
+
+            # Backup old data
+            cursor.execute("""
+                SELECT id, code, op_type, amount_cny, shares_redeemed,
+                       confirm_date, confirm_nav, shares_added, cost_after,
+                       created_at, applied_at
+                FROM transactions
+            """)
+            old_transactions = cursor.fetchall()
+
+            # Drop old table
+            cursor.execute("DROP TABLE transactions")
+
+            # Create new table with account_id
+            cursor.execute("""
+                CREATE TABLE transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL DEFAULT 1,
+                    code TEXT NOT NULL,
+                    op_type TEXT NOT NULL,
+                    amount_cny REAL,
+                    shares_redeemed REAL,
+                    confirm_date TEXT NOT NULL,
+                    confirm_nav REAL,
+                    shares_added REAL,
+                    cost_after REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    applied_at TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+                )
+            """)
+
+            # Restore data with default account_id = 1
+            for row in old_transactions:
+                cursor.execute("""
+                    INSERT INTO transactions
+                    (id, account_id, code, op_type, amount_cny, shares_redeemed,
+                     confirm_date, confirm_nav, shares_added, cost_after,
+                     created_at, applied_at)
+                    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, row)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_code ON transactions(code)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_confirm_date ON transactions(confirm_date)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized.")

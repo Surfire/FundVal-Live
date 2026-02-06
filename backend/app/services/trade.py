@@ -14,10 +14,10 @@ from .trading_calendar import get_confirm_date, confirm_date_to_str
 logger = logging.getLogger(__name__)
 
 
-def _get_position(code: str) -> Optional[Dict[str, Any]]:
+def _get_position(account_id: int, code: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT code, cost, shares FROM positions WHERE code = ?", (code,))
+    cursor.execute("SELECT code, cost, shares FROM positions WHERE account_id = ? AND code = ?", (account_id, code))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -25,7 +25,7 @@ def _get_position(code: str) -> Optional[Dict[str, Any]]:
     return {"code": row["code"], "cost": float(row["cost"]), "shares": float(row["shares"])}
 
 
-def add_position_trade(code: str, amount_cny: float, trade_ts: Optional[datetime] = None) -> Dict[str, Any]:
+def add_position_trade(account_id: int, code: str, amount_cny: float, trade_ts: Optional[datetime] = None) -> Dict[str, Any]:
     """
     加仓：按交易时间确定确认日，若该日净值已公布则立即更新持仓并记流水；
     否则写入待确认流水，等定时任务用真实净值补算。
@@ -41,7 +41,7 @@ def add_position_trade(code: str, amount_cny: float, trade_ts: Optional[datetime
 
     if nav and nav > 0:
         shares_added = round(amount_cny / nav, 4)
-        pos = _get_position(code)
+        pos = _get_position(account_id, code)
         if pos:
             old_cost, old_shares = pos["cost"], pos["shares"]
             new_shares = old_shares + shares_added
@@ -49,13 +49,13 @@ def add_position_trade(code: str, amount_cny: float, trade_ts: Optional[datetime
         else:
             new_shares = shares_added
             new_cost = nav
-        upsert_position(code, new_cost, new_shares)
+        upsert_position(account_id, code, new_cost, new_shares)
         cursor.execute(
             """
-            INSERT INTO transactions (code, op_type, amount_cny, confirm_date, confirm_nav, shares_added, cost_after, applied_at)
-            VALUES (?, 'add', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO transactions (account_id, code, op_type, amount_cny, confirm_date, confirm_nav, shares_added, cost_after, applied_at)
+            VALUES (?, ?, 'add', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            (code, amount_cny, confirm_date_str, nav, shares_added, new_cost),
+            (account_id, code, amount_cny, confirm_date_str, nav, shares_added, new_cost),
         )
         conn.commit()
         conn.close()
@@ -70,10 +70,10 @@ def add_position_trade(code: str, amount_cny: float, trade_ts: Optional[datetime
     else:
         cursor.execute(
             """
-            INSERT INTO transactions (code, op_type, amount_cny, confirm_date, confirm_nav, shares_added, cost_after, applied_at)
-            VALUES (?, 'add', ?, ?, NULL, NULL, NULL, NULL)
+            INSERT INTO transactions (account_id, code, op_type, amount_cny, confirm_date, confirm_nav, shares_added, cost_after, applied_at)
+            VALUES (?, ?, 'add', ?, ?, NULL, NULL, NULL, NULL)
             """,
-            (code, amount_cny, confirm_date_str),
+            (account_id, code, amount_cny, confirm_date_str),
         )
         conn.commit()
         conn.close()
@@ -85,13 +85,13 @@ def add_position_trade(code: str, amount_cny: float, trade_ts: Optional[datetime
         }
 
 
-def reduce_position_trade(code: str, shares_redeemed: float, trade_ts: Optional[datetime] = None) -> Dict[str, Any]:
+def reduce_position_trade(account_id: int, code: str, shares_redeemed: float, trade_ts: Optional[datetime] = None) -> Dict[str, Any]:
     """
     减仓：按交易时间确定确认日，若该日净值已公布则立即扣减份额并记流水；否则待确认。
     """
     if shares_redeemed <= 0:
         return {"ok": False, "message": "减仓份额必须大于 0"}
-    pos = _get_position(code)
+    pos = _get_position(account_id, code)
     if not pos or pos["shares"] <= 0:
         return {"ok": False, "message": "该基金无持仓或份额为 0"}
     if shares_redeemed > pos["shares"]:
@@ -109,17 +109,17 @@ def reduce_position_trade(code: str, shares_redeemed: float, trade_ts: Optional[
         new_shares = round(pos["shares"] - shares_redeemed, 4)
         new_cost = pos["cost"]
         if new_shares <= 0:
-            remove_position(code)
+            remove_position(account_id, code)
             cost_after = 0.0
         else:
-            upsert_position(code, new_cost, new_shares)
+            upsert_position(account_id, code, new_cost, new_shares)
             cost_after = new_cost
         cursor.execute(
             """
-            INSERT INTO transactions (code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav, cost_after, applied_at)
-            VALUES (?, 'reduce', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO transactions (account_id, code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav, cost_after, applied_at)
+            VALUES (?, ?, 'reduce', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            (code, amount_cny, shares_redeemed, confirm_date_str, nav, cost_after),
+            (account_id, code, amount_cny, shares_redeemed, confirm_date_str, nav, cost_after),
         )
         conn.commit()
         conn.close()
@@ -133,10 +133,10 @@ def reduce_position_trade(code: str, shares_redeemed: float, trade_ts: Optional[
     else:
         cursor.execute(
             """
-            INSERT INTO transactions (code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav, cost_after, applied_at)
-            VALUES (?, 'reduce', NULL, ?, ?, NULL, NULL, NULL)
+            INSERT INTO transactions (account_id, code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav, cost_after, applied_at)
+            VALUES (?, ?, 'reduce', NULL, ?, ?, NULL, NULL, NULL)
             """,
-            (code, shares_redeemed, confirm_date_str),
+            (account_id, code, shares_redeemed, confirm_date_str),
         )
         conn.commit()
         conn.close()
@@ -148,11 +148,30 @@ def reduce_position_trade(code: str, shares_redeemed: float, trade_ts: Optional[
         }
 
 
-def list_transactions(code: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-    """操作记录列表，可选按基金筛选。"""
+def list_transactions(account_id: int = None, code: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    """操作记录列表，可选按账户和基金筛选。"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    if code:
+
+    if account_id and code:
+        cursor.execute(
+            """
+            SELECT id, code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav,
+                   shares_added, cost_after, created_at, applied_at
+            FROM transactions WHERE account_id = ? AND code = ? ORDER BY id DESC LIMIT ?
+            """,
+            (account_id, code, limit),
+        )
+    elif account_id:
+        cursor.execute(
+            """
+            SELECT id, code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav,
+                   shares_added, cost_after, created_at, applied_at
+            FROM transactions WHERE account_id = ? ORDER BY id DESC LIMIT ?
+            """,
+            (account_id, limit),
+        )
+    elif code:
         cursor.execute(
             """
             SELECT id, code, op_type, amount_cny, shares_redeemed, confirm_date, confirm_nav,
@@ -195,14 +214,14 @@ def process_pending_transactions() -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, code, op_type, amount_cny, shares_redeemed, confirm_date FROM transactions WHERE applied_at IS NULL AND confirm_nav IS NULL"
+        "SELECT id, account_id, code, op_type, amount_cny, shares_redeemed, confirm_date FROM transactions WHERE applied_at IS NULL AND confirm_nav IS NULL"
     )
     pending = cursor.fetchall()
     conn.close()
     applied = 0
     for row in pending:
-        tid, code, op_type, amount_cny, shares_redeemed, confirm_date = (
-            row["id"], row["code"], row["op_type"], row["amount_cny"], row["shares_redeemed"], row["confirm_date"]
+        tid, account_id, code, op_type, amount_cny, shares_redeemed, confirm_date = (
+            row["id"], row["account_id"], row["code"], row["op_type"], row["amount_cny"], row["shares_redeemed"], row["confirm_date"]
         )
         nav = get_nav_on_date(code, confirm_date) if confirm_date else None
         if not nav or nav <= 0:
@@ -211,7 +230,7 @@ def process_pending_transactions() -> int:
         cursor = conn.cursor()
         if op_type == "add" and amount_cny:
             shares_added = round(amount_cny / nav, 4)
-            pos = _get_position(code)
+            pos = _get_position(account_id, code)
             if pos:
                 old_c, old_s = pos["cost"], pos["shares"]
                 new_shares = old_s + shares_added
@@ -219,13 +238,13 @@ def process_pending_transactions() -> int:
             else:
                 new_shares = shares_added
                 new_cost = nav
-            upsert_position(code, new_cost, new_shares)
+            upsert_position(account_id, code, new_cost, new_shares)
             cursor.execute(
                 "UPDATE transactions SET confirm_nav = ?, shares_added = ?, cost_after = ?, applied_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (nav, shares_added, new_cost, tid),
             )
         elif op_type == "reduce" and shares_redeemed:
-            pos = _get_position(code)
+            pos = _get_position(account_id, code)
             if not pos:
                 conn.close()
                 continue
@@ -233,9 +252,9 @@ def process_pending_transactions() -> int:
             new_shares = round(pos["shares"] - shares_redeemed, 4)
             cost_after = pos["cost"] if new_shares > 0 else 0.0
             if new_shares <= 0:
-                remove_position(code)
+                remove_position(account_id, code)
             else:
-                upsert_position(code, pos["cost"], new_shares)
+                upsert_position(account_id, code, pos["cost"], new_shares)
             cursor.execute(
                 "UPDATE transactions SET confirm_nav = ?, amount_cny = ?, cost_after = ?, applied_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (nav, amount_cny, cost_after, tid),

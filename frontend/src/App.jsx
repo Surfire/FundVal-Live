@@ -4,14 +4,16 @@ import {
   ChevronLeft,
   Wallet,
   LayoutGrid,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  Users
 } from 'lucide-react';
 import { FundList } from './pages/FundList';
 import { FundDetail } from './pages/FundDetail';
 import Account from './pages/Account';
 import Settings from './pages/Settings';
 import { SubscribeModal } from './components/SubscribeModal';
-import { searchFunds, getFundDetail, getAccountPositions, subscribeFund } from './services/api';
+import { AccountModal } from './components/AccountModal';
+import { searchFunds, getFundDetail, getAccountPositions, subscribeFund, getAccounts } from './services/api';
 import packageJson from '../../package.json';
 
 const APP_VERSION = packageJson.version;
@@ -19,6 +21,12 @@ const APP_VERSION = packageJson.version;
 export default function App() {
   // --- State ---
   const [currentView, setCurrentView] = useState('list'); // 'list' | 'detail' | 'account' | 'settings'
+  const [currentAccount, setCurrentAccount] = useState(() => {
+    const saved = localStorage.getItem('fundval_current_account');
+    return saved ? parseInt(saved) : 1;
+  });
+  const [accounts, setAccounts] = useState([]);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
   
   // Initialize from localStorage
   const [watchlist, setWatchlist] = useState(() => {
@@ -54,11 +62,26 @@ export default function App() {
     localStorage.setItem('fundval_watchlist', JSON.stringify(watchlist));
   }, [watchlist]);
 
+  // Persist current account
+  useEffect(() => {
+    localStorage.setItem('fundval_current_account', currentAccount.toString());
+  }, [currentAccount]);
+
+  // Load accounts
+  const loadAccounts = async () => {
+    const accs = await getAccounts();
+    setAccounts(accs);
+  };
+
+  useEffect(() => {
+    loadAccounts();
+  }, []);
+
   // Fetch account codes to prevent duplicates
   const fetchAccountCodes = async () => {
     try {
-        const data = await getAccountPositions();
-        setAccountCodes(new Set(data.positions.map(p => p.code)));
+        const data = await getAccountPositions(currentAccount);
+        setAccountCodes(new Set((data.positions || []).map(p => p.code)));
     } catch (e) {
         console.error("Failed to fetch account codes", e);
     }
@@ -66,7 +89,7 @@ export default function App() {
 
   useEffect(() => {
     fetchAccountCodes();
-  }, [currentView]); // Refresh when switching views
+  }, [currentView, currentAccount]); // Refresh when switching views or accounts
   
   // --- Data Fetching ---
   
@@ -260,7 +283,29 @@ export default function App() {
                    </button>
                 </div>
               )}
-              
+
+              {/* Account Selector */}
+              {currentView === 'account' && accounts.length > 0 && (
+                <div className="flex items-center gap-2 ml-4">
+                  <select
+                    value={currentAccount}
+                    onChange={(e) => setCurrentAccount(Number(e.target.value))}
+                    className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    {accounts.map(acc => (
+                      <option key={acc.id} value={acc.id}>{acc.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => setAccountModalOpen(true)}
+                    className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                    title="管理账户"
+                  >
+                    <Users className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+
               <div>
                 <h1 className="text-lg font-bold text-slate-800 leading-tight">
                   {currentView === 'detail' ? '基金详情' : (currentView === 'account' ? '我的账户' : (currentView === 'settings' ? '设置' : 'FundVal Live'))}
@@ -332,6 +377,7 @@ export default function App() {
 
         {currentView === 'account' && (
            <Account
+                currentAccount={currentAccount}
                 isActive={currentView === 'account'}
                 onSelectFund={handleCardClick}
                 onPositionChange={notifyPositionChange}
@@ -408,6 +454,17 @@ export default function App() {
           </a>
         </div>
       </footer>
+
+      {/* Account Management Modal */}
+      {accountModalOpen && (
+        <AccountModal
+          accounts={accounts}
+          currentAccount={currentAccount}
+          onClose={() => setAccountModalOpen(false)}
+          onRefresh={loadAccounts}
+          onSwitch={setCurrentAccount}
+        />
+      )}
 
     </div>
   );

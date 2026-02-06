@@ -26,8 +26,8 @@
 ### 资金看板
 ![Dashboard](docs/汇总页面.png)
 
-### 持仓管理
-![alt text](docs/image-1.png)
+### 多账户管理
+![Multi Account](docs/多账户.png)
 
 ### 技术指标审计
 ![Technical Indicators](docs/基金详情-技术指标.png)

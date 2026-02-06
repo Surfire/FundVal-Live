@@ -31,19 +31,9 @@ const SORT_OPTIONS = [
   { label: '当日预估收益率（从低到高）', key: 'est_rate', direction: 'asc' },
 ];
 
-const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading, isActive }) => {
+const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWatchlist, syncLoading, isActive }) => {
   // 初始化时从 localStorage 读取缓存
-  const [data, setData] = useState(() => {
-    try {
-      const cached = localStorage.getItem('account_data_cache');
-      if (cached) {
-        return JSON.parse(cached);
-      }
-    } catch (e) {
-      console.error('Failed to load cached account data', e);
-    }
-    return { summary: {}, positions: [] };
-  });
+  const [data, setData] = useState({ summary: {}, positions: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -80,30 +70,12 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
   const [modalTransactionsPage, setModalTransactionsPage] = useState(1);
   const MODAL_TX_PAGE_SIZE = 10;
 
-  // 缓存管理
-  const lastFetchTimeRef = useRef(Date.now());
-
-  const fetchData = async (retryCount = 0, silent = true) => {
-    // 先从 localStorage 读取缓存，立即显示
-    const cachedData = localStorage.getItem('account_data_cache');
-    if (cachedData) {
-      try {
-        const parsed = JSON.parse(cachedData);
-        setData(parsed);
-      } catch (e) {
-        console.error('Failed to parse cached data', e);
-      }
-    }
-
-    if (!silent) setLoading(true);
+  const fetchData = async (retryCount = 0) => {
+    setLoading(true);
     setError(null);
     try {
-      const res = await getAccountPositions();
+      const res = await getAccountPositions(currentAccount);
       setData(res);
-      lastFetchTimeRef.current = Date.now(); // 更新缓存时间
-
-      // 保存到 localStorage
-      localStorage.setItem('account_data_cache', JSON.stringify(res));
     } catch (e) {
       console.error(e);
 
@@ -111,30 +83,33 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
       if (retryCount < 2) {
         const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s
         console.log(`Retrying in ${delay}ms... (attempt ${retryCount + 1}/2)`);
-        setTimeout(() => fetchData(retryCount + 1, silent), delay);
+        setTimeout(() => fetchData(retryCount + 1), delay);
       } else {
         setError('加载账户数据失败，请检查后端服务是否启动');
       }
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    // 立即静默刷新一次
+    // 切换账户时直接加载数据
     fetchData();
-  }, []);
+  }, [currentAccount]); // 账户切换时重新加载
 
-  // 轮询机制：每 15 秒自动刷新数据（静默模式）
+  // 轮询机制：每 15 秒自动刷新数据
   useEffect(() => {
     if (!isActive) return;
 
     const interval = setInterval(() => {
-      fetchData(); // 静默刷新
+      // 轮询时不显示 loading，直接更新数据
+      getAccountPositions(currentAccount)
+        .then(setData)
+        .catch(console.error);
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [isActive]);
+  }, [isActive, currentAccount]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -177,7 +152,7 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
         code: formData.code,
         cost: parseFloat(formData.cost),
         shares: parseFloat(formData.shares)
-      });
+      }, currentAccount);
       setModalOpen(false);
       onPositionChange && onPositionChange(formData.code, 'add');
       fetchData();
@@ -191,7 +166,7 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
   const handleDelete = async (code) => {
     if (!confirm(`确定删除 ${code} 吗？`)) return;
     try {
-      await deletePosition(code);
+      await deletePosition(code, currentAccount);
       onPositionChange && onPositionChange(code, 'remove');
       fetchData();
     } catch (e) {
@@ -225,7 +200,7 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
     setAddSubmitting(true);
     try {
       const payload = { amount: parseFloat(addAmount), trade_time: buildTradeTime(addTradeDate, addTradeCutoff) };
-      const result = await addPositionTrade(addModalPos.code, payload);
+      const result = await addPositionTrade(addModalPos.code, payload, currentAccount);
       setAddModalPos(null);
       if (result.pending) alert(result.message || '已记录，待净值公布后自动更新持仓');
       else alert(`加仓成功，确认净值 ${result.confirm_nav}，获得份额 ${result.shares_added}`);
@@ -249,7 +224,7 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
     setReduceSubmitting(true);
     try {
       const payload = { shares: sh, trade_time: buildTradeTime(reduceTradeDate, reduceTradeCutoff) };
-      const result = await reducePositionTrade(reduceModalPos.code, payload);
+      const result = await reducePositionTrade(reduceModalPos.code, payload, currentAccount);
       setReduceModalPos(null);
       if (result.pending) alert(result.message || '已记录，待净值公布后自动更新持仓');
       else alert(`减仓成功，确认净值 ${result.confirm_nav}，到账金额约 ${result.amount_cny}`);
@@ -267,16 +242,17 @@ const Account = ({ onSelectFund, onPositionChange, onSyncWatchlist, syncLoading,
     setModalTransactionsLoading(true);
     setModalTransactionsOpen(false);
     setModalTransactionsPage(1);
-    getTransactions(editingPos.code, 200)
+    getTransactions(currentAccount, editingPos.code, 200)
       .then(setModalTransactions)
       .catch(() => setModalTransactions([]))
       .finally(() => setModalTransactionsLoading(false));
-  }, [modalOpen, editingPos?.code]);
+  }, [modalOpen, editingPos?.code, currentAccount]);
 
   const { summary, positions } = data;
+  const displayPositions = positions || [];
 
   // 排序逻辑
-  const sortedPositions = [...positions].sort((a, b) => {
+  const sortedPositions = [...displayPositions].sort((a, b) => {
     const aValue = a[sortOption.key] || 0;
     const bValue = b[sortOption.key] || 0;
     return sortOption.direction === 'desc' ? bValue - aValue : aValue - bValue;

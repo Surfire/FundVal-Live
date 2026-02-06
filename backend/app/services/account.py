@@ -17,14 +17,14 @@ def classify_fund_simple(name: str) -> str:
     if "债" in name: return "债券"
     return "混合/其他"
 
-def get_all_positions() -> Dict[str, Any]:
+def get_all_positions(account_id: int = 1) -> Dict[str, Any]:
     """
-    Fetch all positions, get real-time valuations in parallel,
+    Fetch all positions for a specific account, get real-time valuations in parallel,
     and compute portfolio statistics.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM positions")
+    cursor.execute("SELECT * FROM positions WHERE account_id = ?", (account_id,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -167,23 +167,23 @@ def get_all_positions() -> Dict[str, Any]:
         "positions": sorted(positions, key=lambda x: x["est_market_value"], reverse=True)
     }
 
-def upsert_position(code: str, cost: float, shares: float):
+def upsert_position(account_id: int, code: str, cost: float, shares: float):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO positions (code, cost, shares) 
-        VALUES (?, ?, ?)
-        ON CONFLICT(code) DO UPDATE SET
+        INSERT INTO positions (account_id, code, cost, shares)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(account_id, code) DO UPDATE SET
             cost = excluded.cost,
             shares = excluded.shares,
             updated_at = CURRENT_TIMESTAMP
-    """, (code, cost, shares))
+    """, (account_id, code, cost, shares))
     conn.commit()
     conn.close()
 
-def remove_position(code: str):
+def remove_position(account_id: int, code: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM positions WHERE code = ?", (code,))
+    cursor.execute("DELETE FROM positions WHERE account_id = ? AND code = ?", (account_id, code))
     conn.commit()
     conn.close()
