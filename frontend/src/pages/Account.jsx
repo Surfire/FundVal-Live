@@ -46,6 +46,9 @@ const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWat
     return saved ? JSON.parse(saved) : SORT_OPTIONS[0];
   });
 
+  // Check if this is the aggregated view (all accounts)
+  const isAggregatedView = currentAccount === 0;
+
   const sortDropdownRef = useRef(null);
 
   // Form State
@@ -287,6 +290,15 @@ const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWat
 
   return (
     <div className="space-y-6">
+      {/* Aggregated View Notice */}
+      {isAggregatedView && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <p className="text-sm text-blue-800">
+            <strong>正在查看全部账户的汇总数据</strong> - 相同基金的持仓已自动合并（份额相加，成本加权平均）。汇总视图仅供查看，不支持修改操作。
+          </p>
+        </div>
+      )}
+
       {/* Error Banner */}
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center justify-between">
@@ -328,7 +340,9 @@ const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWat
 
       {/* 2. Actions */}
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-slate-800">持仓明细</h2>
+        <h2 className="text-xl font-bold text-slate-800">
+          {isAggregatedView ? '全部账户持仓汇总' : '持仓明细'}
+        </h2>
         <div className="flex gap-2">
             {/* 排序下拉菜单 */}
             <div className="relative" ref={sortDropdownRef}>
@@ -378,13 +392,15 @@ const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWat
               <Download className={`w-4 h-4 ${navUpdating ? 'animate-spin' : ''}`} />
               {navUpdating ? '更新中...' : '更新净值'}
             </button>
-            <button
-              onClick={() => handleOpenModal()}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
-            >
-              <Plus className="w-4 h-4" />
-              记一笔
-            </button>
+            {!isAggregatedView && (
+              <button
+                onClick={() => handleOpenModal()}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+              >
+                <Plus className="w-4 h-4" />
+                记一笔
+              </button>
+            )}
         </div>
       </div>
 
@@ -471,20 +487,27 @@ const Account = ({ currentAccount = 1, onSelectFund, onPositionChange, onSyncWat
 
                   <td className="px-4 py-3">
                     <div className="flex justify-center gap-2">
-                      <button 
-                        onClick={() => handleOpenModal(pos)}
-                        className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                        title="修改持仓"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(pos.code)}
-                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                        title="删除"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {!isAggregatedView && (
+                        <>
+                          <button
+                            onClick={() => handleOpenModal(pos)}
+                            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                            title="修改持仓"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(pos.code)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                            title="删除"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
+                      {isAggregatedView && (
+                        <span className="text-xs text-slate-400">仅查看</span>
+                      )}
                     </div>
                   </td>
                 </tr>

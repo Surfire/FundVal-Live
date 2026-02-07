@@ -292,6 +292,7 @@ export default function App() {
                     onChange={(e) => setCurrentAccount(Number(e.target.value))}
                     className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
+                    <option value={0}>全部账户</option>
                     {accounts.map(acc => (
                       <option key={acc.id} value={acc.id}>{acc.name}</option>
                     ))}

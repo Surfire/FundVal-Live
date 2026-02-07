@@ -11,10 +11,18 @@ def get_all_positions(account_id: int = 1) -> Dict[str, Any]:
     """
     Fetch all positions for a specific account, get real-time valuations in parallel,
     and compute portfolio statistics.
+
+    Special case: account_id = 0 returns aggregated data from all accounts.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM positions WHERE account_id = ?", (account_id,))
+
+    # Special case: account_id = 0 means "all accounts"
+    if account_id == 0:
+        cursor.execute("SELECT * FROM positions WHERE shares > 0")
+    else:
+        cursor.execute("SELECT * FROM positions WHERE account_id = ? AND shares > 0", (account_id,))
+
     rows = cursor.fetchall()
     conn.close()
 
@@ -24,8 +32,37 @@ def get_all_positions(account_id: int = 1) -> Dict[str, Any]:
     total_day_income = 0.0
 
     # 1. Fetch real-time data in parallel
-    # We map code -> row data first
-    position_map = {row["code"]: row for row in rows}
+    # For account_id = 0, we need to merge positions with same code
+    if account_id == 0:
+        # Group by code and merge
+        code_positions = {}
+        for row in rows:
+            code = row["code"]
+            if code not in code_positions:
+                code_positions[code] = {
+                    "cost": 0.0,
+                    "shares": 0.0,
+                    "total_cost_basis": 0.0
+                }
+            # Accumulate shares and cost basis
+            shares = float(row["shares"])
+            cost = float(row["cost"])
+            code_positions[code]["shares"] += shares
+            code_positions[code]["total_cost_basis"] += shares * cost
+
+        # Calculate weighted average cost
+        position_map = {}
+        for code, data in code_positions.items():
+            if data["shares"] > 0:
+                weighted_avg_cost = data["total_cost_basis"] / data["shares"]
+                position_map[code] = {
+                    "code": code,
+                    "cost": weighted_avg_cost,
+                    "shares": data["shares"]
+                }
+    else:
+        # Single account: use as-is
+        position_map = {row["code"]: row for row in rows}
     
     with ThreadPoolExecutor(max_workers=10) as executor:
         # Submit tasks
