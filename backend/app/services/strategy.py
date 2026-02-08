@@ -1,5 +1,6 @@
+import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import akshare as ak
@@ -45,6 +46,27 @@ def _normalize_holdings(holdings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [{"code": code, "weight": weight / total} for code, weight in merged.items()]
 
 
+def _normalize_codes(codes: Optional[List[str]]) -> List[str]:
+    if not codes:
+        return []
+    out = sorted({str(c).strip() for c in codes if str(c).strip()})
+    return out
+
+
+def _parse_scope_codes(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return _normalize_codes(value)
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return _normalize_codes(parsed)
+    except Exception:
+        pass
+    return []
+
+
 def _get_price_and_name(code: str) -> Tuple[Optional[float], str, float]:
     data = get_combined_valuation(code) or {}
     name = data.get("name") or code
@@ -57,7 +79,6 @@ def _get_price_and_name(code: str) -> Tuple[Optional[float], str, float]:
     if price > 0:
         return price, name, est_rate
 
-    # Fallback to latest historical NAV
     history = get_fund_history(code, limit=1)
     if history:
         return float(history[-1]["nav"]), name, 0.0
@@ -65,38 +86,42 @@ def _get_price_and_name(code: str) -> Tuple[Optional[float], str, float]:
     return None, name, 0.0
 
 
-def _get_active_version(portfolio_id: int) -> Optional[Dict[str, Any]]:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, portfolio_id, version_no, effective_date, note, is_active, created_at
-        FROM strategy_versions
-        WHERE portfolio_id = ? AND is_active = 1
-        LIMIT 1
-        """,
-        (portfolio_id,),
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+def _to_date(d: Optional[str]) -> date:
+    if not d:
+        return date.today()
+    try:
+        return datetime.strptime(d, "%Y-%m-%d").date()
+    except Exception:
+        return date.today()
 
 
-def _get_version_holdings(version_id: int) -> List[Dict[str, Any]]:
+def _fetch_account_positions(account_id: int, code_scope: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT fund_code, target_weight
-        FROM strategy_holdings
-        WHERE version_id = ?
-        ORDER BY fund_code
-        """,
-        (version_id,),
-    )
+
+    if code_scope:
+        placeholders = ",".join(["?"] * len(code_scope))
+        cursor.execute(
+            f"""
+            SELECT code, shares, cost
+            FROM positions
+            WHERE account_id = ? AND shares > 0 AND code IN ({placeholders})
+            """,
+            [account_id, *code_scope],
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT code, shares, cost
+            FROM positions
+            WHERE account_id = ? AND shares > 0
+            """,
+            (account_id,),
+        )
+
     rows = cursor.fetchall()
     conn.close()
-    return [{"code": row["fund_code"], "weight": float(row["target_weight"])} for row in rows]
+    return [{"code": row["code"], "shares": float(row["shares"]), "cost": float(row["cost"])} for row in rows]
 
 
 def list_portfolios(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -106,9 +131,9 @@ def list_portfolios(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
     if account_id:
         cursor.execute(
             """
-            SELECT p.id, p.name, p.account_id, p.benchmark, p.fee_rate,
+            SELECT p.id, p.name, p.account_id, p.benchmark, p.fee_rate, p.scope_codes,
                    p.created_at, p.updated_at,
-                   v.id as active_version_id, v.version_no
+                   v.id as active_version_id, v.version_no, v.effective_date
             FROM strategy_portfolios p
             LEFT JOIN strategy_versions v ON p.id = v.portfolio_id AND v.is_active = 1
             WHERE p.account_id = ?
@@ -119,18 +144,23 @@ def list_portfolios(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
     else:
         cursor.execute(
             """
-            SELECT p.id, p.name, p.account_id, p.benchmark, p.fee_rate,
+            SELECT p.id, p.name, p.account_id, p.benchmark, p.fee_rate, p.scope_codes,
                    p.created_at, p.updated_at,
-                   v.id as active_version_id, v.version_no
+                   v.id as active_version_id, v.version_no, v.effective_date
             FROM strategy_portfolios p
             LEFT JOIN strategy_versions v ON p.id = v.portfolio_id AND v.is_active = 1
             ORDER BY p.id DESC
             """
         )
 
-    portfolios = [dict(row) for row in cursor.fetchall()]
+    rows = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["scope_codes"] = _parse_scope_codes(item.get("scope_codes"))
+        rows.append(item)
+
     conn.close()
-    return portfolios
+    return rows
 
 
 def get_portfolio_detail(portfolio_id: int) -> Dict[str, Any]:
@@ -139,7 +169,7 @@ def get_portfolio_detail(portfolio_id: int) -> Dict[str, Any]:
 
     cursor.execute(
         """
-        SELECT id, name, account_id, benchmark, fee_rate, created_at, updated_at
+        SELECT id, name, account_id, benchmark, fee_rate, scope_codes, created_at, updated_at
         FROM strategy_portfolios
         WHERE id = ?
         """,
@@ -165,12 +195,32 @@ def get_portfolio_detail(portfolio_id: int) -> Dict[str, Any]:
     active = next((v for v in versions if v["is_active"]), None)
     active_holdings = _get_version_holdings(active["id"]) if active else []
 
+    p = dict(portfolio)
+    p["scope_codes"] = _parse_scope_codes(p.get("scope_codes"))
+
     return {
-        "portfolio": dict(portfolio),
+        "portfolio": p,
         "versions": versions,
         "active_version": active,
         "active_holdings": active_holdings,
     }
+
+
+def _get_version_holdings(version_id: int) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT fund_code, target_weight
+        FROM strategy_holdings
+        WHERE version_id = ?
+        ORDER BY fund_code
+        """,
+        (version_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"code": row["fund_code"], "weight": float(row["target_weight"])} for row in rows]
 
 
 def create_portfolio(
@@ -181,8 +231,10 @@ def create_portfolio(
     fee_rate: float = 0.001,
     effective_date: Optional[str] = None,
     note: str = "",
+    scope_codes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     normalized = _normalize_holdings(holdings)
+    normalized_scope = _normalize_codes(scope_codes) or [h["code"] for h in normalized]
     effective_date = effective_date or date.today().strftime("%Y-%m-%d")
 
     conn = get_db_connection()
@@ -190,10 +242,10 @@ def create_portfolio(
     try:
         cursor.execute(
             """
-            INSERT INTO strategy_portfolios (name, account_id, benchmark, fee_rate)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO strategy_portfolios (name, account_id, benchmark, fee_rate, scope_codes)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (name, account_id, benchmark, fee_rate),
+            (name, account_id, benchmark, fee_rate, json.dumps(normalized_scope, ensure_ascii=False)),
         )
         portfolio_id = cursor.lastrowid
 
@@ -219,6 +271,7 @@ def create_portfolio(
             "id": portfolio_id,
             "active_version_id": version_id,
             "holdings": normalized,
+            "scope_codes": normalized_scope,
         }
     except Exception:
         conn.rollback()
@@ -233,8 +286,10 @@ def create_strategy_version(
     effective_date: Optional[str] = None,
     note: str = "",
     activate: bool = True,
+    scope_codes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     normalized = _normalize_holdings(holdings)
+    normalized_scope = _normalize_codes(scope_codes)
     effective_date = effective_date or date.today().strftime("%Y-%m-%d")
 
     conn = get_db_connection()
@@ -251,6 +306,12 @@ def create_strategy_version(
     try:
         if activate:
             cursor.execute("UPDATE strategy_versions SET is_active = 0 WHERE portfolio_id = ?", (portfolio_id,))
+
+        if normalized_scope:
+            cursor.execute(
+                "UPDATE strategy_portfolios SET scope_codes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (json.dumps(normalized_scope, ensure_ascii=False), portfolio_id),
+            )
 
         cursor.execute(
             """
@@ -275,28 +336,13 @@ def create_strategy_version(
             "version_no": version_no,
             "holdings": normalized,
             "is_active": activate,
+            "scope_codes": normalized_scope,
         }
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-
-
-def _fetch_account_positions(account_id: int) -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT code, shares, cost
-        FROM positions
-        WHERE account_id = ? AND shares > 0
-        """,
-        (account_id,),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"code": row["code"], "shares": float(row["shares"]), "cost": float(row["cost"])} for row in rows]
 
 
 def generate_rebalance_orders(
@@ -314,12 +360,14 @@ def generate_rebalance_orders(
     holdings = detail.get("active_holdings", [])
     target_map = {h["code"]: float(h["weight"]) for h in holdings}
 
-    positions = _fetch_account_positions(account_id)
-    current_shares = {p["code"]: float(p["shares"]) for p in positions}
-
-    all_codes = sorted(set(target_map.keys()) | set(current_shares.keys()))
+    scope_codes = set(detail["portfolio"].get("scope_codes") or [])
+    all_codes = sorted(scope_codes | set(target_map.keys())) if scope_codes else sorted(set(target_map.keys()))
     if not all_codes:
-        return {"orders": [], "summary": {"message": "无可调仓标的"}}
+        raise ValueError("strategy has no symbols")
+
+    positions = _fetch_account_positions(account_id, all_codes)
+    position_map = {p["code"]: p for p in positions}
+    current_shares = {code: float(position_map.get(code, {}).get("shares", 0.0)) for code in all_codes}
 
     price_map: Dict[str, float] = {}
     name_map: Dict[str, str] = {}
@@ -335,7 +383,7 @@ def generate_rebalance_orders(
 
     total_value = sum(current_shares.get(code, 0.0) * price_map.get(code, 0.0) for code in all_codes)
     if total_value <= 0:
-        raise ValueError("当前账户没有可估值的持仓，无法生成调仓指令")
+        raise ValueError("策略关联持仓当前市值为 0，请先关联并录入持仓")
 
     applied_fee_rate = float(fee_rate if fee_rate is not None else detail["portfolio"]["fee_rate"] or 0.0)
 
@@ -386,6 +434,7 @@ def generate_rebalance_orders(
                 "target_shares": round(t_shares, 4),
                 "current_shares": round(c_shares, 4),
                 "delta_shares": round(delta_shares, 4),
+                "delta_value": round(delta_value, 2),
                 "price": round(price, 4),
                 "trade_amount": round(trade_amount, 2),
                 "fee": round(fee, 2),
@@ -451,6 +500,7 @@ def generate_rebalance_orders(
             "total_sell": round(total_sell, 2),
             "estimated_fee": round(total_fee, 2),
             "fee_rate": applied_fee_rate,
+            "scope_size": len(all_codes),
         },
     }
 
@@ -516,27 +566,57 @@ def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
-def _build_portfolio_return_series(weight_map: Dict[str, float]) -> pd.Series:
+def _get_cached_history_series(code: str, start_date: pd.Timestamp) -> pd.Series:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT date, nav
+        FROM fund_history
+        WHERE code = ? AND date >= ?
+        ORDER BY date ASC
+        """,
+        (code, start_date.strftime("%Y-%m-%d")),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    if len(rows) >= 30:
+        return pd.Series(
+            [float(r["nav"]) for r in rows],
+            index=pd.to_datetime([r["date"] for r in rows]),
+            dtype=float,
+        )
+
+    history = get_fund_history(code, limit=1500)
+    if not history:
+        return pd.Series(dtype=float)
+
+    filtered = [h for h in history if h["date"] >= start_date.strftime("%Y-%m-%d")]
+    if not filtered:
+        return pd.Series(dtype=float)
+
+    return pd.Series(
+        [float(h["nav"]) for h in filtered],
+        index=pd.to_datetime([h["date"] for h in filtered]),
+        dtype=float,
+    )
+
+
+def _build_portfolio_return_series(weight_map: Dict[str, float], start_date: pd.Timestamp) -> pd.Series:
     if not weight_map:
         return pd.Series(dtype=float)
 
     nav_frames = {}
     for code, _ in weight_map.items():
-        history = get_fund_history(code, limit=9999)
-        if not history:
-            continue
-        series = pd.Series(
-            data=[float(item["nav"]) for item in history],
-            index=pd.to_datetime([item["date"] for item in history]),
-            dtype=float,
-        )
-        nav_frames[code] = series
+        series = _get_cached_history_series(code, start_date)
+        if not series.empty:
+            nav_frames[code] = series
 
     if not nav_frames:
         return pd.Series(dtype=float)
 
-    nav_df = pd.concat(nav_frames, axis=1).sort_index()
-    nav_df = nav_df.ffill().dropna(how="all")
+    nav_df = pd.concat(nav_frames, axis=1).sort_index().ffill().dropna(how="all")
     available_cols = [c for c in nav_df.columns if not nav_df[c].isna().all()]
     if not available_cols:
         return pd.Series(dtype=float)
@@ -553,29 +633,24 @@ def _build_portfolio_return_series(weight_map: Dict[str, float]) -> pd.Series:
     return portfolio_returns
 
 
-def _fetch_hs300_returns(start_date: Optional[pd.Timestamp] = None) -> pd.Series:
-    start = (start_date or pd.Timestamp("2010-01-01")).strftime("%Y%m%d")
+def _fetch_hs300_returns(start_date: pd.Timestamp) -> pd.Series:
+    start = start_date.strftime("%Y%m%d")
     end = datetime.now().strftime("%Y%m%d")
 
     try:
         df = ak.index_zh_a_hist(symbol="000300", period="daily", start_date=start, end_date=end)
         if df is not None and not df.empty:
-            date_col = "日期"
-            close_col = "收盘"
-            s = pd.Series(df[close_col].astype(float).values, index=pd.to_datetime(df[date_col]))
-            return s.pct_change().dropna()
+            s = pd.Series(df["收盘"].astype(float).values, index=pd.to_datetime(df["日期"]))
+            return s.pct_change().fillna(0.0)
     except Exception as e:
         logger.warning(f"Failed to fetch HS300 by index_zh_a_hist: {e}")
 
     try:
         df = ak.stock_zh_index_daily_em(symbol="sh000300")
         if df is not None and not df.empty:
-            date_col = "date"
-            close_col = "close"
-            s = pd.Series(df[close_col].astype(float).values, index=pd.to_datetime(df[date_col]))
-            if start_date is not None:
-                s = s[s.index >= start_date]
-            return s.pct_change().dropna()
+            s = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"]))
+            s = s[s.index >= start_date]
+            return s.pct_change().fillna(0.0)
     except Exception as e:
         logger.warning(f"Failed to fetch HS300 by stock_zh_index_daily_em: {e}")
 
@@ -584,13 +659,7 @@ def _fetch_hs300_returns(start_date: Optional[pd.Timestamp] = None) -> pd.Series
 
 def _calculate_period_returns(nav: pd.Series) -> Dict[str, Optional[float]]:
     if nav.empty:
-        return {
-            "week": None,
-            "month": None,
-            "quarter": None,
-            "year": None,
-            "ytd": None,
-        }
+        return {"week": None, "month": None, "quarter": None, "year": None, "ytd": None}
 
     latest_value = float(nav.iloc[-1])
     now = pd.Timestamp.now().normalize()
@@ -603,10 +672,7 @@ def _calculate_period_returns(nav: pd.Series) -> Dict[str, Optional[float]]:
 
     def _ret(start_dt: pd.Timestamp) -> Optional[float]:
         hist = nav[nav.index <= start_dt]
-        if hist.empty:
-            base = float(nav.iloc[0])
-        else:
-            base = float(hist.iloc[-1])
+        base = float(hist.iloc[-1]) if not hist.empty else float(nav.iloc[0])
         if base <= 0:
             return None
         return latest_value / base - 1
@@ -648,8 +714,8 @@ def _calculate_metrics(portfolio_returns: pd.Series, benchmark_returns: pd.Serie
 
     cum_nav = (1 + portfolio_returns).cumprod()
     total_return = float(cum_nav.iloc[-1] - 1)
-    years = len(portfolio_returns) / TRADING_DAYS_PER_YEAR
-    annual_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else total_return
+    years = max(len(portfolio_returns) / TRADING_DAYS_PER_YEAR, 1 / TRADING_DAYS_PER_YEAR)
+    annual_return = (1 + total_return) ** (1 / years) - 1
 
     annual_vol = float(portfolio_returns.std(ddof=0) * np.sqrt(TRADING_DAYS_PER_YEAR))
     sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol > 1e-8 else None
@@ -691,11 +757,11 @@ def _calculate_metrics(portfolio_returns: pd.Series, benchmark_returns: pd.Serie
     }
 
 
-def _to_nav_points(returns: pd.Series) -> List[Dict[str, Any]]:
+def _to_return_points(returns: pd.Series) -> List[Dict[str, Any]]:
     if returns.empty:
         return []
     nav = (1 + returns).cumprod()
-    return [{"date": idx.strftime("%Y-%m-%d"), "nav": round(float(val), 6)} for idx, val in nav.items()]
+    return [{"date": idx.strftime("%Y-%m-%d"), "return": round(float(val - 1), 6)} for idx, val in nav.items()]
 
 
 def _estimate_intraday_rate(weight_map: Dict[str, float]) -> Optional[float]:
@@ -719,31 +785,54 @@ def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:
     holdings = detail.get("active_holdings", [])
     strategy_weights = {h["code"]: float(h["weight"]) for h in holdings}
 
-    strategy_returns = _build_portfolio_return_series(strategy_weights)
-    strategy_start = strategy_returns.index.min() if not strategy_returns.empty else None
-    benchmark_returns = _fetch_hs300_returns(strategy_start)
+    active_version = detail.get("active_version")
+    start_date = pd.Timestamp(_to_date(active_version.get("effective_date") if active_version else None))
+
+    strategy_returns = _build_portfolio_return_series(strategy_weights, start_date)
+    benchmark_returns = _fetch_hs300_returns(start_date)
 
     strategy_metrics = _calculate_metrics(strategy_returns, benchmark_returns)
     strategy_periods = _calculate_period_returns((1 + strategy_returns).cumprod()) if not strategy_returns.empty else {}
 
-    # Build actual-account weighted series (using current holding weights)
-    positions = _fetch_account_positions(account_id)
+    linked_scope = set(detail["portfolio"].get("scope_codes") or [])
+    scope = sorted(linked_scope | set(strategy_weights.keys()))
+    positions = _fetch_account_positions(account_id, scope if scope else None)
+
     value_map = {}
+    principal = 0.0
     for p in positions:
         price, _, _ = _get_price_and_name(p["code"])
         if price and price > 0:
             value_map[p["code"]] = p["shares"] * price
+            principal += p["shares"] * p["cost"]
 
-    total_value = sum(value_map.values())
-    actual_weights = {code: v / total_value for code, v in value_map.items()} if total_value > 0 else {}
-    actual_returns = _build_portfolio_return_series(actual_weights)
+    market_value = sum(value_map.values())
+    profit = market_value - principal
+
+    actual_weights = {code: v / market_value for code, v in value_map.items()} if market_value > 0 else {}
+    actual_returns = _build_portfolio_return_series(actual_weights, start_date)
     actual_metrics = _calculate_metrics(actual_returns, benchmark_returns)
     actual_periods = _calculate_period_returns((1 + actual_returns).cumprod()) if not actual_returns.empty else {}
+
+    strategy_curve = _to_return_points(strategy_returns)
+    benchmark_curve = _to_return_points(benchmark_returns)
+    if not strategy_curve:
+        strategy_curve = [{"date": start_date.strftime("%Y-%m-%d"), "return": 0.0}]
+    if not benchmark_curve:
+        benchmark_curve = [{"date": start_date.strftime("%Y-%m-%d"), "return": 0.0}]
 
     return {
         "portfolio": detail["portfolio"],
         "active_version": detail.get("active_version"),
         "target_holdings": holdings,
+        "scope_codes": sorted(linked_scope),
+        "calculation_universe": scope,
+        "capital": {
+            "principal": round(principal, 2),
+            "market_value": round(market_value, 2),
+            "profit": round(profit, 2),
+            "profit_rate": round(profit / principal, 6) if principal > 0 else None,
+        },
         "period_returns": {
             "strategy": strategy_periods,
             "actual": actual_periods,
@@ -757,8 +846,7 @@ def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:
             "actual": _estimate_intraday_rate(actual_weights),
         },
         "series": {
-            "strategy": _to_nav_points(strategy_returns),
-            "actual": _to_nav_points(actual_returns),
-            "benchmark": _to_nav_points(benchmark_returns),
+            "strategy": strategy_curve,
+            "benchmark": benchmark_curve,
         },
     }

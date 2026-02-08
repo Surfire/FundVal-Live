@@ -30,6 +30,7 @@ class CreatePortfolioModel(BaseModel):
     fee_rate: float = Field(0.001, ge=0, le=0.02)
     effective_date: Optional[str] = None
     note: str = ""
+    scope_codes: Optional[List[str]] = None
 
 
 class CreateVersionModel(BaseModel):
@@ -37,6 +38,7 @@ class CreateVersionModel(BaseModel):
     effective_date: Optional[str] = None
     note: str = ""
     activate: bool = True
+    scope_codes: Optional[List[str]] = None
 
 
 class RebalanceModel(BaseModel):
@@ -69,6 +71,7 @@ def api_create_portfolio(data: CreatePortfolioModel):
             fee_rate=data.fee_rate,
             effective_date=data.effective_date,
             note=data.note,
+            scope_codes=data.scope_codes,
         )
         return {"ok": True, **result}
     except ValueError as e:
@@ -96,6 +99,7 @@ def api_create_version(portfolio_id: int, data: CreateVersionModel):
             effective_date=data.effective_date,
             note=data.note,
             activate=data.activate,
+            scope_codes=data.scope_codes,
         )
         return {"ok": True, **result}
     except ValueError as e:

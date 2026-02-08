@@ -408,6 +408,7 @@ def init_db():
                 account_id INTEGER NOT NULL,
                 benchmark TEXT DEFAULT '000300',
                 fee_rate REAL DEFAULT 0.001,
+                scope_codes TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
@@ -472,6 +473,16 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rebalance_orders_portfolio ON rebalance_orders(portfolio_id, account_id, status)")
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5)")
+
+    # Migration: strategy scope codes
+    if current_version < 6:
+        logger.info("Running migration: adding scope_codes to strategy_portfolios")
+        cursor.execute("PRAGMA table_info(strategy_portfolios)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "scope_codes" not in columns:
+            cursor.execute("ALTER TABLE strategy_portfolios ADD COLUMN scope_codes TEXT DEFAULT '[]'")
+            cursor.execute("UPDATE strategy_portfolios SET scope_codes = '[]' WHERE scope_codes IS NULL")
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6)")
 
     conn.commit()
     conn.close()
