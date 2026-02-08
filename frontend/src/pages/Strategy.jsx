@@ -19,6 +19,7 @@ import {
   getStrategyPerformance,
   getStrategyPortfolio,
   getStrategyPositionsView,
+  listRebalanceBatches,
   listRebalanceOrders,
   listStrategyPortfolios,
   reducePositionTrade,
@@ -318,6 +319,8 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
   const [performance, setPerformance] = useState(null);
   const [positionsView, setPositionsView] = useState({ rows: [], summary: {} });
   const [orders, setOrders] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [selectedBatchId, setSelectedBatchId] = useState(null);
 
   const [accountPositions, setAccountPositions] = useState([]);
 
@@ -360,12 +363,14 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
 
   const loadBase = useCallback(async (portfolioId) => {
     if (!portfolioId) return;
-    const [d, o] = await Promise.all([
+    const [d, o, b] = await Promise.all([
       getStrategyPortfolio(portfolioId),
       listRebalanceOrders(portfolioId, currentAccount),
+      listRebalanceBatches(portfolioId, currentAccount),
     ]);
     setDetail(d);
     setOrders(Array.isArray(o) ? o : []);
+    setBatches(Array.isArray(b) ? b : []);
   }, [currentAccount]);
 
   const loadPerformance = useCallback(async (portfolioId) => {
@@ -468,8 +473,13 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
       min_deviation: 0.005,
       persist: true,
     });
-    const o = await listRebalanceOrders(selectedId, currentAccount);
+    const [o, b] = await Promise.all([
+      listRebalanceOrders(selectedId, currentAccount),
+      listRebalanceBatches(selectedId, currentAccount),
+    ]);
     setOrders(o);
+    setBatches(b);
+    if (b.length) setSelectedBatchId(b[0].id);
   };
 
   const openAddModal = (row) => {
@@ -519,8 +529,12 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
   const handleOrderStatus = async (orderId, status) => {
     await updateRebalanceOrderStatus(orderId, status);
     if (!selectedId) return;
-    const o = await listRebalanceOrders(selectedId, currentAccount);
+    const [o, b] = await Promise.all([
+      listRebalanceOrders(selectedId, currentAccount),
+      listRebalanceBatches(selectedId, currentAccount),
+    ]);
     setOrders(o);
+    setBatches(b);
   };
 
   const openExecuteModal = (order) => {
@@ -572,6 +586,9 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
 
   const holdingRows = Array.isArray(positionsView?.rows) ? positionsView.rows : [];
   const orderRows = Array.isArray(orders) ? orders : [];
+  const displayedOrders = selectedBatchId
+    ? orderRows.filter((o) => o.batch_id === selectedBatchId)
+    : orderRows;
 
   return (
     <div className="space-y-6">
@@ -781,7 +798,33 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
               {loadingBase ? (
                 <div className="text-sm text-slate-500">调仓指令加载中...</div>
               ) : (
-                <div className="overflow-x-auto border rounded-lg">
+                <div className="space-y-3">
+                  <div className="border rounded-lg p-3 bg-slate-50">
+                    <div className="text-sm font-medium text-slate-700 mb-2">调仓历史批次</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setSelectedBatchId(null)}
+                        className={`px-2 py-1 rounded text-xs border ${
+                          selectedBatchId === null ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-slate-300 text-slate-600'
+                        }`}
+                      >
+                        全部
+                      </button>
+                      {batches.map((b) => (
+                        <button
+                          key={b.id}
+                          onClick={() => setSelectedBatchId(b.id)}
+                          className={`px-2 py-1 rounded text-xs border ${
+                            selectedBatchId === b.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-slate-300 text-slate-600'
+                          }`}
+                          title={`${b.created_at} · ${b.status}`}
+                        >
+                          #{b.id} {b.status === 'completed' ? '已完成' : '待执行'} ({b.completed_orders}/{b.total_orders})
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto border rounded-lg">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
@@ -796,7 +839,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                       </tr>
                     </thead>
                     <tbody>
-                      {orderRows.slice(0, 80).map((o) => (
+                      {displayedOrders.slice(0, 80).map((o) => (
                         <tr key={o.id} className="border-t">
                           <td className="px-2 py-2">{o.fund_name || o.fund_code} <span className="text-slate-400">({o.fund_code})</span></td>
                           <td className="px-2 py-2 text-right">{o.action === 'buy' ? '买入' : o.action === 'sell' ? '卖出' : '保持'}</td>
@@ -840,6 +883,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                       ))}
                     </tbody>
                   </table>
+                </div>
                 </div>
               )}
             </>

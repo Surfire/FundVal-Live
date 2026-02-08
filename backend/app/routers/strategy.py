@@ -13,6 +13,7 @@ from ..services.strategy import (
     get_portfolio_detail,
     get_portfolio_positions_view,
     list_portfolios,
+    list_rebalance_batches,
     list_rebalance_orders,
     update_rebalance_order_status,
 )
@@ -211,5 +212,28 @@ def api_execute_order(order_id: int, data: ExecuteOrderModel):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-orders/{order_id}/apply")
+def api_apply_order(order_id: int, data: ExecuteOrderModel):
+    try:
+        return execute_rebalance_order(
+            order_id=order_id,
+            executed_shares=data.executed_shares,
+            executed_price=data.executed_price,
+            note=data.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/rebalance-batches")
+def api_list_rebalance_batches(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return {"batches": list_rebalance_batches(portfolio_id, account_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

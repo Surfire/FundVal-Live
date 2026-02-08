@@ -264,6 +264,21 @@ export const updateRebalanceOrderStatus = async (orderId, status) => {
 };
 
 export const executeRebalanceOrder = async (orderId, data) => {
-    const response = await api.post(`/strategy/rebalance-orders/${orderId}/execute`, data);
-    return response.data;
+    try {
+        const response = await api.post(`/strategy/rebalance-orders/${orderId}/execute`, data);
+        return response.data;
+    } catch (error) {
+        if (error?.response?.status === 405) {
+            const response = await api.post(`/strategy/rebalance-orders/${orderId}/apply`, data);
+            return response.data;
+        }
+        throw error;
+    }
+};
+
+export const listRebalanceBatches = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/rebalance-batches`, {
+        params: { account_id: accountId }
+    });
+    return response.data.batches || [];
 };

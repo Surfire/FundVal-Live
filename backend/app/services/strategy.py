@@ -19,6 +19,8 @@ TRADING_DAYS_PER_YEAR = 252
 PERF_CACHE_TTL_SECONDS = 60
 
 _PERF_CACHE: Dict[Tuple[int, int], Tuple[float, Dict[str, Any]]] = {}
+_FUND_NAME_CACHE: Dict[str, str] = {}
+_FUND_NAME_CACHE_TS: float = 0.0
 
 
 def _parse_weight(value: Any) -> float:
@@ -99,6 +101,27 @@ def _get_price_and_name(code: str) -> Tuple[Optional[float], str, float]:
         conn.close()
         if row and row["name"]:
             name = row["name"]
+    except Exception:
+        pass
+
+    # Fallback to global fund name cache from AkShare.
+    global _FUND_NAME_CACHE_TS
+    try:
+        now = time.time()
+        if now - _FUND_NAME_CACHE_TS > 6 * 3600 or not _FUND_NAME_CACHE:
+            df = ak.fund_name_em()
+            if df is not None and not df.empty and "基金代码" in df.columns and "基金简称" in df.columns:
+                cache = {
+                    str(row["基金代码"]).strip(): str(row["基金简称"]).strip()
+                    for _, row in df.iterrows()
+                    if str(row.get("基金代码", "")).strip() and str(row.get("基金简称", "")).strip()
+                }
+                if cache:
+                    _FUND_NAME_CACHE.clear()
+                    _FUND_NAME_CACHE.update(cache)
+                    _FUND_NAME_CACHE_TS = now
+        if code in _FUND_NAME_CACHE:
+            name = _FUND_NAME_CACHE[code]
     except Exception:
         pass
 
@@ -484,6 +507,20 @@ def generate_rebalance_orders(
         try:
             cursor.execute(
                 """
+                INSERT INTO rebalance_batches (portfolio_id, account_id, version_id, source, status, title)
+                VALUES (?, ?, ?, 'auto', 'pending', ?)
+                """,
+                (
+                    portfolio_id,
+                    account_id,
+                    active_version["id"],
+                    f"智能调仓 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                ),
+            )
+            batch_id = cursor.lastrowid
+
+            cursor.execute(
+                """
                 DELETE FROM rebalance_orders
                 WHERE portfolio_id = ? AND account_id = ? AND status = 'suggested'
                 """,
@@ -495,8 +532,8 @@ def generate_rebalance_orders(
                 INSERT INTO rebalance_orders (
                     portfolio_id, version_id, account_id, fund_code, fund_name,
                     action, target_weight, current_weight, target_shares,
-                    current_shares, delta_shares, price, trade_amount, fee, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suggested')
+                    current_shares, delta_shares, price, trade_amount, fee, status, batch_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suggested', ?)
                 """,
                 [
                     (
@@ -514,6 +551,7 @@ def generate_rebalance_orders(
                         item["price"],
                         item["trade_amount"],
                         item["fee"],
+                        batch_id,
                     )
                     for item in orders
                 ],
@@ -551,6 +589,7 @@ def list_rebalance_orders(portfolio_id: int, account_id: int, status: Optional[s
             SELECT id, portfolio_id, version_id, account_id, fund_code, fund_name,
                    action, target_weight, current_weight, target_shares,
                    current_shares, delta_shares, price, trade_amount, fee,
+                   batch_id,
                    status, created_at, executed_at, executed_shares, executed_price,
                    executed_amount, execution_note
             FROM rebalance_orders
@@ -565,6 +604,7 @@ def list_rebalance_orders(portfolio_id: int, account_id: int, status: Optional[s
             SELECT id, portfolio_id, version_id, account_id, fund_code, fund_name,
                    action, target_weight, current_weight, target_shares,
                    current_shares, delta_shares, price, trade_amount, fee,
+                   batch_id,
                    status, created_at, executed_at, executed_shares, executed_price,
                    executed_amount, execution_note
             FROM rebalance_orders
@@ -579,13 +619,58 @@ def list_rebalance_orders(portfolio_id: int, account_id: int, status: Optional[s
     return rows
 
 
+def _refresh_batch_status(batch_id: Optional[int]):
+    if not batch_id:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) AS cnt FROM rebalance_orders WHERE batch_id = ? AND status = 'suggested'",
+        (batch_id,),
+    )
+    pending = int(cursor.fetchone()["cnt"])
+    if pending == 0:
+        cursor.execute(
+            "UPDATE rebalance_batches SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (batch_id,),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_rebalance_batches(portfolio_id: int, account_id: int) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, portfolio_id, account_id, version_id, source, status, title, note, created_at, completed_at
+        FROM rebalance_batches
+        WHERE portfolio_id = ? AND account_id = ?
+        ORDER BY id DESC
+        """,
+        (portfolio_id, account_id),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    for row in rows:
+        cursor.execute(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN status='suggested' THEN 1 ELSE 0 END) AS pending FROM rebalance_orders WHERE batch_id = ?",
+            (row["id"],),
+        )
+        stats = cursor.fetchone()
+        row["total_orders"] = int(stats["total"] or 0)
+        row["pending_orders"] = int(stats["pending"] or 0)
+        row["completed_orders"] = row["total_orders"] - row["pending_orders"]
+    conn.close()
+    return rows
+
+
 def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
     if status not in {"suggested", "executed", "skipped"}:
         raise ValueError("invalid status")
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, portfolio_id FROM rebalance_orders WHERE id = ?", (order_id,))
+    cursor.execute("SELECT id, portfolio_id, batch_id FROM rebalance_orders WHERE id = ?", (order_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
@@ -603,6 +688,7 @@ def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
     conn.commit()
     conn.close()
     _invalidate_perf_cache(int(row["portfolio_id"]))
+    _refresh_batch_status(row["batch_id"])
     return {"ok": True}
 
 
@@ -622,6 +708,7 @@ def execute_rebalance_order(
     cursor.execute(
         """
         SELECT id, portfolio_id, account_id, fund_code, action, fee
+               , batch_id
         FROM rebalance_orders
         WHERE id = ?
         """,
@@ -695,6 +782,7 @@ def execute_rebalance_order(
         conn.close()
 
     _invalidate_perf_cache(int(row["portfolio_id"]))
+    _refresh_batch_status(row["batch_id"])
     return {
         "ok": True,
         "order_id": order_id,

@@ -501,6 +501,35 @@ def init_db():
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7)")
 
+    # Migration: rebalance batches
+    if current_version < 8:
+        logger.info("Running migration: adding rebalance batches")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rebalance_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                version_id INTEGER,
+                source TEXT DEFAULT 'auto',
+                status TEXT DEFAULT 'pending',
+                title TEXT,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                FOREIGN KEY (portfolio_id) REFERENCES strategy_portfolios(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rebalance_batches_portfolio ON rebalance_batches(portfolio_id, account_id, status)")
+
+        cursor.execute("PRAGMA table_info(rebalance_orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "batch_id" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN batch_id INTEGER")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized.")
