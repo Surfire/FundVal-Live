@@ -213,6 +213,11 @@ export const getStrategyPortfolio = async (portfolioId) => {
     return response.data;
 };
 
+export const deleteStrategyPortfolio = async (portfolioId) => {
+    const response = await api.delete(`/strategy/portfolios/${portfolioId}`);
+    return response.data;
+};
+
 export const createStrategyVersion = async (portfolioId, data) => {
     const response = await api.post(`/strategy/portfolios/${portfolioId}/versions`, data);
     return response.data;
@@ -220,6 +225,13 @@ export const createStrategyVersion = async (portfolioId, data) => {
 
 export const getStrategyPerformance = async (portfolioId, accountId) => {
     const response = await api.get(`/strategy/portfolios/${portfolioId}/performance`, {
+        params: { account_id: accountId }
+    });
+    return response.data;
+};
+
+export const getStrategyPositionsView = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/positions`, {
         params: { account_id: accountId }
     });
     return response.data;

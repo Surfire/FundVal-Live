@@ -6,9 +6,11 @@ from pydantic import BaseModel, Field
 from ..services.strategy import (
     create_portfolio,
     create_strategy_version,
+    delete_portfolio,
     generate_rebalance_orders,
     get_performance,
     get_portfolio_detail,
+    get_portfolio_positions_view,
     list_portfolios,
     list_rebalance_orders,
     update_rebalance_order_status,
@@ -90,6 +92,16 @@ def api_get_portfolio(portfolio_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/strategy/portfolios/{portfolio_id}")
+def api_delete_portfolio(portfolio_id: int):
+    try:
+        return delete_portfolio(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/strategy/portfolios/{portfolio_id}/versions")
 def api_create_version(portfolio_id: int, data: CreateVersionModel):
     try:
@@ -112,6 +124,16 @@ def api_create_version(portfolio_id: int, data: CreateVersionModel):
 def api_get_performance(portfolio_id: int, account_id: int = Query(..., ge=1)):
     try:
         return get_performance(portfolio_id, account_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/positions")
+def api_get_positions_view(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return get_portfolio_positions_view(portfolio_id, account_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

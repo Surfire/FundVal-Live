@@ -1,16 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  createStrategyPortfolio,
-  createStrategyVersion,
-  generateStrategyRebalance,
-  getAccountPositions,
-  getStrategyPerformance,
-  getStrategyPortfolio,
-  listRebalanceOrders,
-  listStrategyPortfolios,
-  updateRebalanceOrderStatus,
-} from '../services/api';
-import {
   CartesianGrid,
   Legend,
   Line,
@@ -20,16 +9,20 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-
-const ALL_WEATHER_SAMPLE = [
-  { code: '513330', weight: 25 },
-  { code: '513070', weight: 5 },
-  { code: '513120', weight: 5 },
-  { code: '164824', weight: 15 },
-  { code: '518880', weight: 20 },
-  { code: '516650', weight: 10 },
-  { code: '159870', weight: 20 },
-];
+import {
+  createStrategyPortfolio,
+  createStrategyVersion,
+  deleteStrategyPortfolio,
+  generateStrategyRebalance,
+  getAccountPositions,
+  getStrategyPerformance,
+  getStrategyPortfolio,
+  getStrategyPositionsView,
+  listRebalanceOrders,
+  listStrategyPortfolios,
+  searchFunds,
+  updateRebalanceOrderStatus,
+} from '../services/api';
 
 const RANGE_OPTIONS = [
   { key: 'since', label: '成立以来' },
@@ -40,6 +33,13 @@ const RANGE_OPTIONS = [
   { key: 'ytd', label: '年初至今' },
 ];
 
+const TAB_OPTIONS = [
+  { key: 'performance', label: '业绩' },
+  { key: 'holdings', label: '持仓' },
+  { key: 'announcements', label: '公告' },
+  { key: 'news', label: '资讯' },
+];
+
 function toPercent(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return '--';
   return `${(v * 100).toFixed(2)}%`;
@@ -48,24 +48,6 @@ function toPercent(v) {
 function toNumber(v, n = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return '--';
   return Number(v).toFixed(n);
-}
-
-function parseHoldingsText(text) {
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const out = [];
-  for (const line of lines) {
-    const m = line.match(/^([0-9A-Za-z]{5,10})\s+([0-9.]+)%?$/);
-    if (!m) {
-      throw new Error(`格式错误：${line}，请用“代码 空格 权重%”`);
-    }
-    out.push({ code: m[1], weight: parseFloat(m[2]) });
-  }
-  if (!out.length) throw new Error('请输入至少一条持仓');
-  return out;
 }
 
 function mergeSeries(strategySeries = [], benchmarkSeries = []) {
@@ -85,8 +67,7 @@ function mergeSeries(strategySeries = [], benchmarkSeries = []) {
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       ...d,
-      excess:
-        d.strategy === null || d.benchmark === null ? null : d.strategy - d.benchmark,
+      excess: d.strategy === null || d.benchmark === null ? null : d.strategy - d.benchmark,
     }));
 }
 
@@ -107,14 +88,10 @@ function filterRange(data, rangeKey) {
   return data.filter((d) => new Date(d.date) >= start);
 }
 
-function toTextFromHoldings(holdings = []) {
-  return holdings.map((h) => `${h.code} ${(h.weight * 100).toFixed(2)}%`).join('\n');
-}
-
 function Modal({ title, children, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-auto">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-auto">
         <div className="px-5 py-4 border-b flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-700">关闭</button>
@@ -125,36 +102,210 @@ function Modal({ title, children, onClose }) {
   );
 }
 
+function StrategyBuilder({
+  mode,
+  onClose,
+  onSubmit,
+  accountPositions,
+  initialName = '新策略',
+  initialBenchmark = '000300',
+  initialFeeRate = '0.0015',
+  initialRows = [],
+  initialScope = [],
+}) {
+  const isCreate = mode === 'create';
+  const [step, setStep] = useState(1);
+  const [name, setName] = useState(initialName);
+  const [benchmark, setBenchmark] = useState(initialBenchmark);
+  const [feeRate, setFeeRate] = useState(initialFeeRate);
+  const [note, setNote] = useState('');
+  const [rows, setRows] = useState(initialRows.length ? initialRows : [{ code: '', name: '', weight: '' }]);
+  const [selectedCodes, setSelectedCodes] = useState(initialScope);
+
+  useEffect(() => {
+    const targetCodes = rows.map((r) => r.code.trim()).filter(Boolean);
+    setSelectedCodes((prev) => {
+      const merged = new Set([...prev, ...targetCodes]);
+      return Array.from(merged);
+    });
+  }, [rows]);
+
+  const toggleScope = (code) => {
+    setSelectedCodes((prev) => {
+      if (prev.includes(code)) return prev.filter((c) => c !== code);
+      return [...prev, code];
+    });
+  };
+
+  const addRow = () => setRows((prev) => [...prev, { code: '', name: '', weight: '' }]);
+  const removeRow = (idx) => setRows((prev) => prev.filter((_, i) => i !== idx));
+
+  const resolveName = async (idx, code) => {
+    const q = code.trim();
+    if (!q) return;
+    try {
+      const results = await searchFunds(q);
+      const exact = results.find((x) => x.id === q) || results[0];
+      if (!exact) return;
+      setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, name: exact.name || r.name } : r)));
+    } catch {
+      // ignore
+    }
+  };
+
+  const canGoStep2 = useMemo(() => {
+    const validRows = rows.filter((r) => r.code.trim() && Number(r.weight) > 0);
+    return validRows.length > 0;
+  }, [rows]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const holdings = rows
+      .filter((r) => r.code.trim() && Number(r.weight) > 0)
+      .map((r) => ({ code: r.code.trim(), weight: Number(r.weight) }));
+
+    if (!holdings.length) {
+      alert('请至少填写一个目标标的');
+      return;
+    }
+
+    const payload = {
+      name,
+      benchmark,
+      fee_rate: parseFloat(feeRate || '0'),
+      note,
+      holdings,
+      scope_codes: selectedCodes,
+    };
+
+    await onSubmit(payload);
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="flex gap-2 text-sm">
+        <div className={`px-3 py-1.5 rounded-full ${step === 1 ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>1. 目标组合</div>
+        <div className={`px-3 py-1.5 rounded-full ${step === 2 ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>2. 关联持仓范围</div>
+      </div>
+
+      {step === 1 && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {isCreate ? (
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="策略名称" className="border rounded-lg px-3 py-2 text-sm" />
+            ) : (
+              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="版本备注，如 2026Q1 再平衡" className="border rounded-lg px-3 py-2 text-sm md:col-span-2" />
+            )}
+            <input value={benchmark} onChange={(e) => setBenchmark(e.target.value)} placeholder="基准代码" className="border rounded-lg px-3 py-2 text-sm" />
+            <input value={feeRate} onChange={(e) => setFeeRate(e.target.value)} placeholder="费率，如 0.0015" className="border rounded-lg px-3 py-2 text-sm" />
+          </div>
+
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-2 py-2 text-left">基金代码</th>
+                  <th className="px-2 py-2 text-left">基金名称（自动识别）</th>
+                  <th className="px-2 py-2 text-right">目标权重(%)</th>
+                  <th className="px-2 py-2 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={`${idx}-${row.code}`} className="border-t">
+                    <td className="px-2 py-2">
+                      <input
+                        value={row.code}
+                        onChange={(e) => {
+                          const code = e.target.value;
+                          setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, code } : r)));
+                        }}
+                        onBlur={() => resolveName(idx, row.code)}
+                        placeholder="如 513330"
+                        className="w-full border rounded px-2 py-1"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        value={row.name}
+                        onChange={(e) => setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r)))}
+                        placeholder="自动识别或手工填写"
+                        className="w-full border rounded px-2 py-1"
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={row.weight}
+                        onChange={(e) => setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, weight: e.target.value } : r)))}
+                        className="w-24 border rounded px-2 py-1 text-right"
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <button type="button" onClick={() => removeRow(idx)} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">删除</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <button type="button" onClick={addRow} className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50">新增标的</button>
+
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="px-3 py-2 border rounded-lg text-sm">取消</button>
+            <button type="button" onClick={() => setStep(2)} disabled={!canGoStep2} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">下一步</button>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="space-y-3">
+          <div className="text-sm text-slate-600">从当前账户持仓里勾选本策略要跟踪的持仓范围（已自动勾选目标组合中的标的）。</div>
+          <div className="max-h-72 overflow-auto border rounded-lg p-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+            {accountPositions.map((p) => (
+              <label key={p.code} className="flex items-center gap-2">
+                <input type="checkbox" checked={selectedCodes.includes(p.code)} onChange={() => toggleScope(p.code)} />
+                <span>{p.name || '--'} ({p.code})</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex justify-between">
+            <button type="button" onClick={() => setStep(1)} className="px-3 py-2 border rounded-lg text-sm">上一步</button>
+            <div className="flex gap-2">
+              <button type="button" onClick={onClose} className="px-3 py-2 border rounded-lg text-sm">取消</button>
+              <button type="submit" className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm">{isCreate ? '创建策略' : '发布新一期并生成调仓'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </form>
+  );
+}
+
 export default function Strategy({ currentAccount = 1, isActive = false }) {
   const [portfolios, setPortfolios] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [performance, setPerformance] = useState(null);
-  const [orders, setOrders] = useState([]);
 
-  const [baseLoading, setBaseLoading] = useState(false);
-  const [perfLoading, setPerfLoading] = useState(false);
-
+  const [tab, setTab] = useState('performance');
   const [range, setRange] = useState('since');
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const [updateOpen, setUpdateOpen] = useState(false);
+  const [performance, setPerformance] = useState(null);
+  const [positionsView, setPositionsView] = useState({ rows: [], summary: {} });
+  const [orders, setOrders] = useState([]);
 
   const [accountPositions, setAccountPositions] = useState([]);
 
-  const [createForm, setCreateForm] = useState({
-    name: '全天候策略',
-    benchmark: '000300',
-    feeRate: '0.0015',
-    holdingsText: '',
-    selectedCodes: [],
-  });
+  const [loadingBase, setLoadingBase] = useState(false);
+  const [loadingPerf, setLoadingPerf] = useState(false);
+  const [loadingHoldings, setLoadingHoldings] = useState(false);
 
-  const [updateForm, setUpdateForm] = useState({
-    note: '',
-    holdingsText: '',
-    selectedCodes: [],
-  });
+  const [createOpen, setCreateOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
 
   const selectedPortfolio = useMemo(
     () => portfolios.find((p) => p.id === selectedId),
@@ -166,14 +317,14 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
     setPortfolios(data);
     setSelectedId((prev) => {
       if (!prev && data.length) return data[0].id;
-      if (prev && !data.some((p) => p.id === prev) && data.length) return data[0].id;
+      if (prev && !data.some((x) => x.id === prev) && data.length) return data[0].id;
       return prev;
     });
   }, [currentAccount]);
 
   const loadAccountPositions = useCallback(async () => {
-    const data = await getAccountPositions(currentAccount);
-    setAccountPositions(data.positions || []);
+    const res = await getAccountPositions(currentAccount);
+    setAccountPositions(res.positions || []);
   }, [currentAccount]);
 
   const loadBase = useCallback(async (portfolioId) => {
@@ -188,8 +339,14 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
 
   const loadPerformance = useCallback(async (portfolioId) => {
     if (!portfolioId) return;
-    const p = await getStrategyPerformance(portfolioId, currentAccount);
-    setPerformance(p);
+    const data = await getStrategyPerformance(portfolioId, currentAccount);
+    setPerformance(data);
+  }, [currentAccount]);
+
+  const loadHoldings = useCallback(async (portfolioId) => {
+    if (!portfolioId) return;
+    const data = await getStrategyPositionsView(portfolioId, currentAccount);
+    setPositionsView(data);
   }, [currentAccount]);
 
   useEffect(() => {
@@ -199,152 +356,84 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
 
   useEffect(() => {
     if (!selectedId) return;
-    setBaseLoading(true);
-    loadBase(selectedId)
-      .catch((e) => alert(e?.response?.data?.detail || '加载策略失败'))
-      .finally(() => setBaseLoading(false));
+    setLoadingBase(true);
+    loadBase(selectedId).finally(() => setLoadingBase(false));
 
-    setPerfLoading(true);
-    loadPerformance(selectedId)
-      .catch((e) => alert(e?.response?.data?.detail || '加载绩效失败'))
-      .finally(() => setPerfLoading(false));
-  }, [selectedId, loadBase, loadPerformance]);
+    setLoadingPerf(true);
+    loadPerformance(selectedId).finally(() => setLoadingPerf(false));
+
+    setLoadingHoldings(true);
+    loadHoldings(selectedId).finally(() => setLoadingHoldings(false));
+  }, [selectedId, loadBase, loadPerformance, loadHoldings]);
 
   useEffect(() => {
     if (!isActive || !selectedId) return;
     const t = setInterval(() => {
       loadBase(selectedId).catch(() => {});
       loadPerformance(selectedId).catch(() => {});
+      loadHoldings(selectedId).catch(() => {});
     }, 30000);
     return () => clearInterval(t);
-  }, [isActive, selectedId, loadBase, loadPerformance]);
+  }, [isActive, selectedId, loadBase, loadPerformance, loadHoldings]);
 
-  const applySample = () => {
-    const text = ALL_WEATHER_SAMPLE.map((x) => `${x.code} ${x.weight}%`).join('\n');
-    setCreateForm((prev) => ({ ...prev, holdingsText: text }));
+  const handleCreateStrategy = async (payload) => {
+    await createStrategyPortfolio({ ...payload, account_id: currentAccount });
+    await Promise.all([loadPortfolios(), loadAccountPositions()]);
+    setCreateOpen(false);
   };
 
-  const importFromSelectedPositions = (selectedCodes, setter) => {
-    const selected = accountPositions.filter((p) => selectedCodes.includes(p.code));
-    if (!selected.length) {
-      alert('请先勾选持仓');
-      return;
-    }
-
-    const total = selected.reduce((acc, p) => acc + Number(p.est_market_value || p.nav_market_value || 0), 0);
-    if (total <= 0) {
-      alert('选中持仓当前市值为 0，无法自动导入权重');
-      return;
-    }
-
-    const text = selected
-      .map((p) => {
-        const w = (Number(p.est_market_value || p.nav_market_value || 0) / total) * 100;
-        return `${p.code} ${w.toFixed(2)}%`;
-      })
-      .join('\n');
-
-    setter((prev) => ({ ...prev, holdingsText: text }));
-  };
-
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    try {
-      const holdings = parseHoldingsText(createForm.holdingsText);
-      const scopeCodes = createForm.selectedCodes.length
-        ? createForm.selectedCodes
-        : holdings.map((h) => h.code);
-
-      await createStrategyPortfolio({
-        name: createForm.name,
-        account_id: currentAccount,
-        benchmark: createForm.benchmark,
-        fee_rate: parseFloat(createForm.feeRate || '0'),
-        holdings,
-        note: '初始版本',
-        scope_codes: scopeCodes,
-      });
-
-      await loadPortfolios();
-      setCreateOpen(false);
-      setCreateForm({
-        name: '全天候策略',
-        benchmark: '000300',
-        feeRate: '0.0015',
-        holdingsText: '',
-        selectedCodes: [],
-      });
-      alert('策略创建成功');
-    } catch (err) {
-      alert(err?.response?.data?.detail || err.message || '创建失败');
-    }
-  };
-
-  const openUpdateModal = () => {
-    if (!detail) return;
-    setUpdateForm({
-      note: '',
-      holdingsText: toTextFromHoldings(detail.active_holdings || []),
-      selectedCodes: detail?.portfolio?.scope_codes || [],
-    });
-    setUpdateOpen(true);
-  };
-
-  const handleUpdateStrategy = async (e) => {
-    e.preventDefault();
+  const handleUpdateStrategy = async (payload) => {
     if (!selectedId) return;
-    try {
-      const holdings = parseHoldingsText(updateForm.holdingsText);
-      const scopeCodes = updateForm.selectedCodes.length
-        ? updateForm.selectedCodes
-        : holdings.map((h) => h.code);
+    await createStrategyVersion(selectedId, {
+      holdings: payload.holdings,
+      benchmark: payload.benchmark,
+      note: payload.note || '更新策略组合',
+      activate: true,
+      scope_codes: payload.scope_codes,
+    });
+    await generateStrategyRebalance(selectedId, {
+      account_id: currentAccount,
+      min_deviation: 0.005,
+      persist: true,
+    });
 
-      await createStrategyVersion(selectedId, {
-        holdings,
-        note: updateForm.note || '更新策略组合',
-        activate: true,
-        scope_codes: scopeCodes,
-      });
+    await Promise.all([
+      loadBase(selectedId),
+      loadPerformance(selectedId),
+      loadHoldings(selectedId),
+      loadPortfolios(),
+    ]);
+    setUpdateOpen(false);
+  };
 
-      await generateStrategyRebalance(selectedId, {
-        account_id: currentAccount,
-        min_deviation: 0.005,
-        persist: true,
-      });
+  const handleDeleteStrategy = async () => {
+    if (!selectedId) return;
+    if (!confirm('删除后该策略的版本和调仓记录会一并删除，确认继续？')) return;
 
-      await Promise.all([loadBase(selectedId), loadPerformance(selectedId)]);
-      setUpdateOpen(false);
-      alert('策略已更新，并已自动生成新调仓指令');
-    } catch (err) {
-      alert(err?.response?.data?.detail || err.message || '更新失败');
-    }
+    await deleteStrategyPortfolio(selectedId);
+    setDetail(null);
+    setPerformance(null);
+    setPositionsView({ rows: [], summary: {} });
+    setOrders([]);
+    await loadPortfolios();
   };
 
   const handleGenerateRebalance = async () => {
     if (!selectedId) return;
-    try {
-      await generateStrategyRebalance(selectedId, {
-        account_id: currentAccount,
-        min_deviation: 0.005,
-        persist: true,
-      });
-      await loadBase(selectedId);
-      alert('调仓指令已生成');
-    } catch (err) {
-      alert(err?.response?.data?.detail || '生成失败');
-    }
+    await generateStrategyRebalance(selectedId, {
+      account_id: currentAccount,
+      min_deviation: 0.005,
+      persist: true,
+    });
+    const o = await listRebalanceOrders(selectedId, currentAccount);
+    setOrders(o);
   };
 
   const handleOrderStatus = async (orderId, status) => {
-    try {
-      await updateRebalanceOrderStatus(orderId, status);
-      if (selectedId) {
-        const data = await listRebalanceOrders(selectedId, currentAccount);
-        setOrders(data);
-      }
-    } catch (err) {
-      alert(err?.response?.data?.detail || '更新状态失败');
-    }
+    await updateRebalanceOrderStatus(orderId, status);
+    if (!selectedId) return;
+    const o = await listRebalanceOrders(selectedId, currentAccount);
+    setOrders(o);
   };
 
   const mergedSeries = useMemo(() => {
@@ -353,27 +442,17 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
     return mergeSeries(strategy, benchmark);
   }, [performance]);
 
-  const chartData = useMemo(
-    () => filterRange(mergedSeries, range),
-    [mergedSeries, range]
-  );
-
-  const toggleCode = (codes, code) => {
-    if (codes.includes(code)) return codes.filter((c) => c !== code);
-    return [...codes, code];
-  };
+  const chartData = useMemo(() => filterRange(mergedSeries, range), [mergedSeries, range]);
 
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="flex items-center justify-between gap-2 mb-3">
           <h2 className="text-lg font-bold">策略组合（账户 {currentAccount}）</h2>
-          <button
-            onClick={() => setCreateOpen(true)}
-            className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
-          >
-            新建策略
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => setCreateOpen(true)} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700">新建策略</button>
+            <button onClick={handleDeleteStrategy} disabled={!selectedId} className="px-3 py-2 rounded-lg border border-red-300 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50">删除策略</button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -394,273 +473,215 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
 
         {selectedPortfolio && (
           <div className="text-sm text-slate-600 mt-3">
-            基准：{selectedPortfolio.benchmark} · 费率：{toPercent(selectedPortfolio.fee_rate)} · 关联标的数：{(selectedPortfolio.scope_codes || []).length}
+            基准：{selectedPortfolio.benchmark} · 费率：{toPercent(selectedPortfolio.fee_rate)} · 关联范围：{(selectedPortfolio.scope_codes || []).length} 个标的
           </div>
         )}
       </div>
 
       {selectedId && (
         <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="font-semibold">绩效与调仓</h3>
+          <div className="flex items-center justify-between">
             <div className="flex gap-2">
-              <button
-                onClick={openUpdateModal}
-                className="px-3 py-2 rounded-lg border border-slate-300 text-sm hover:bg-slate-50"
-              >
-                更新策略
-              </button>
-              <button
-                onClick={handleGenerateRebalance}
-                className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
-              >
-                生成调仓指令
-              </button>
+              {TAB_OPTIONS.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                    tab === t.key ? 'bg-blue-100 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
+            {(tab === 'performance' || tab === 'holdings') && (
+              <button onClick={() => setUpdateOpen(true)} className="px-3 py-2 rounded-lg border border-slate-300 text-sm hover:bg-slate-50">更新策略</button>
+            )}
           </div>
 
-          {perfLoading ? (
-            <div className="text-sm text-slate-500">绩效计算中...</div>
-          ) : (
+          {tab === 'performance' && (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div className="rounded-lg bg-slate-50 p-3">策略本金<br /><strong>{toNumber(performance?.capital?.principal, 2)}</strong></div>
-                <div className="rounded-lg bg-slate-50 p-3">当前市值<br /><strong>{toNumber(performance?.capital?.market_value, 2)}</strong></div>
-                <div className="rounded-lg bg-slate-50 p-3">策略盈利<br /><strong>{toNumber(performance?.capital?.profit, 2)}</strong></div>
-                <div className="rounded-lg bg-slate-50 p-3">收益率<br /><strong>{toPercent(performance?.capital?.profit_rate)}</strong></div>
-              </div>
+              {loadingPerf ? (
+                <div className="text-sm text-slate-500">业绩数据加载中...</div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg bg-slate-50 p-3">策略本金<br /><strong>{toNumber(performance?.capital?.principal, 2)}</strong></div>
+                    <div className="rounded-lg bg-slate-50 p-3">当前市值<br /><strong>{toNumber(performance?.capital?.market_value, 2)}</strong></div>
+                    <div className="rounded-lg bg-slate-50 p-3">策略盈利<br /><strong>{toNumber(performance?.capital?.profit, 2)}</strong></div>
+                    <div className="rounded-lg bg-slate-50 p-3">收益率<br /><strong>{toPercent(performance?.capital?.profit_rate)}</strong></div>
+                  </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div className="rounded-lg border p-3">本周回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.week)}</strong></div>
-                <div className="rounded-lg border p-3">本月回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.month)}</strong></div>
-                <div className="rounded-lg border p-3">本季回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.quarter)}</strong></div>
-                <div className="rounded-lg border p-3">本年回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.ytd)}</strong></div>
-              </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg border p-3">本周回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.week)}</strong></div>
+                    <div className="rounded-lg border p-3">本月回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.month)}</strong></div>
+                    <div className="rounded-lg border p-3">本季回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.quarter)}</strong></div>
+                    <div className="rounded-lg border p-3">本年回报<br /><strong>{toPercent(performance?.period_returns?.strategy?.ytd)}</strong></div>
+                  </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div className="rounded-lg border p-3">年化收益<br /><strong>{toPercent(performance?.metrics?.strategy?.annual_return)}</strong></div>
-                <div className="rounded-lg border p-3">年化波动<br /><strong>{toPercent(performance?.metrics?.strategy?.annual_volatility)}</strong></div>
-                <div className="rounded-lg border p-3">Sharpe<br /><strong>{toNumber(performance?.metrics?.strategy?.sharpe, 3)}</strong></div>
-                <div className="rounded-lg border p-3">Alpha<br /><strong>{toPercent(performance?.metrics?.strategy?.alpha)}</strong></div>
-                <div className="rounded-lg border p-3">Beta<br /><strong>{toNumber(performance?.metrics?.strategy?.beta, 3)}</strong></div>
-                <div className="rounded-lg border p-3">Calmar<br /><strong>{toNumber(performance?.metrics?.strategy?.calmar, 3)}</strong></div>
-                <div className="rounded-lg border p-3">信息比率<br /><strong>{toNumber(performance?.metrics?.strategy?.information_ratio, 3)}</strong></div>
-                <div className="rounded-lg border p-3">最大回撤<br /><strong>{toPercent(performance?.metrics?.strategy?.max_drawdown)}</strong></div>
-              </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg border p-3">年化收益<br /><strong>{toPercent(performance?.metrics?.strategy?.annual_return)}</strong></div>
+                    <div className="rounded-lg border p-3">年化波动<br /><strong>{toPercent(performance?.metrics?.strategy?.annual_volatility)}</strong></div>
+                    <div className="rounded-lg border p-3">Sharpe<br /><strong>{toNumber(performance?.metrics?.strategy?.sharpe, 3)}</strong></div>
+                    <div className="rounded-lg border p-3">Alpha<br /><strong>{toPercent(performance?.metrics?.strategy?.alpha)}</strong></div>
+                    <div className="rounded-lg border p-3">Beta<br /><strong>{toNumber(performance?.metrics?.strategy?.beta, 3)}</strong></div>
+                    <div className="rounded-lg border p-3">Calmar<br /><strong>{toNumber(performance?.metrics?.strategy?.calmar, 3)}</strong></div>
+                    <div className="rounded-lg border p-3">信息比率<br /><strong>{toNumber(performance?.metrics?.strategy?.information_ratio, 3)}</strong></div>
+                    <div className="rounded-lg border p-3">最大回撤<br /><strong>{toPercent(performance?.metrics?.strategy?.max_drawdown)}</strong></div>
+                  </div>
 
-              <div className="text-sm text-slate-600">
-                盘中预估回报：策略 {toPercent(performance?.intraday_est_return?.strategy)} · 实际持仓 {toPercent(performance?.intraday_est_return?.actual)}
-              </div>
-
-              <div className="bg-slate-50 border rounded-xl p-3">
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {RANGE_OPTIONS.map((r) => (
-                    <button
-                      key={r.key}
-                      onClick={() => setRange(r.key)}
-                      className={`px-3 py-1.5 rounded-lg text-xs border ${
-                        range === r.key
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      {r.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="date" minTickGap={28} />
-                      <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
-                      <Tooltip formatter={(v) => toPercent(v)} />
-                      <Legend />
-                      <Line type="monotone" dataKey="strategy" stroke="#2563eb" name="组合" dot={false} strokeWidth={2} />
-                      <Line type="monotone" dataKey="benchmark" stroke="#16a34a" name="基准" dot={false} strokeWidth={2} />
-                      <Line type="monotone" dataKey="excess" stroke="#dc2626" name="超额" dot={false} strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+                  <div className="bg-slate-50 border rounded-xl p-3">
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {RANGE_OPTIONS.map((r) => (
+                        <button
+                          key={r.key}
+                          onClick={() => setRange(r.key)}
+                          className={`px-3 py-1.5 rounded-lg text-xs border ${
+                            range === r.key
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="h-72">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="date" minTickGap={28} />
+                          <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                          <Tooltip formatter={(v) => toPercent(v)} />
+                          <Legend />
+                          <Line type="monotone" dataKey="strategy" stroke="#2563eb" name="组合" dot={false} strokeWidth={2} />
+                          <Line type="monotone" dataKey="benchmark" stroke="#16a34a" name="基准" dot={false} strokeWidth={2} />
+                          <Line type="monotone" dataKey="excess" stroke="#dc2626" name="超额" dot={false} strokeWidth={2} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
 
-          {baseLoading ? (
-            <div className="text-sm text-slate-500">调仓数据加载中...</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="px-2 py-2 text-left">标的</th>
-                    <th className="px-2 py-2 text-right">操作</th>
-                    <th className="px-2 py-2 text-right">当前权重</th>
-                    <th className="px-2 py-2 text-right">目标权重</th>
-                    <th className="px-2 py-2 text-right">调整份额</th>
-                    <th className="px-2 py-2 text-right">交易金额</th>
-                    <th className="px-2 py-2 text-right">手续费</th>
-                    <th className="px-2 py-2 text-right">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.slice(0, 80).map((o) => (
-                    <tr key={o.id} className="border-t">
-                      <td className="px-2 py-2">{o.fund_name || o.fund_code} <span className="text-slate-400">({o.fund_code})</span></td>
-                      <td className="px-2 py-2 text-right">{o.action === 'buy' ? '买入' : o.action === 'sell' ? '卖出' : '保持'}</td>
-                      <td className="px-2 py-2 text-right">{toPercent(o.current_weight)}</td>
-                      <td className="px-2 py-2 text-right">{toPercent(o.target_weight)}</td>
-                      <td className="px-2 py-2 text-right">{toNumber(o.delta_shares, 4)}</td>
-                      <td className="px-2 py-2 text-right">{toNumber(o.trade_amount, 2)}</td>
-                      <td className="px-2 py-2 text-right">{toNumber(o.fee, 2)}</td>
-                      <td className="px-2 py-2 text-right">
-                        <select
-                          value={o.status}
-                          onChange={(e) => handleOrderStatus(o.id, e.target.value)}
-                          className="border rounded px-2 py-1"
-                        >
-                          <option value="suggested">待执行</option>
-                          <option value="executed">已执行</option>
-                          <option value="skipped">跳过</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {tab === 'holdings' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-slate-600">当前策略关联持仓视图</div>
+                <button onClick={handleGenerateRebalance} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700">生成调仓指令</button>
+              </div>
+
+              {loadingHoldings ? (
+                <div className="text-sm text-slate-500">持仓数据加载中...</div>
+              ) : (
+                <div className="overflow-x-auto border rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="px-2 py-2 text-left">标的</th>
+                        <th className="px-2 py-2 text-right">份额</th>
+                        <th className="px-2 py-2 text-right">成本</th>
+                        <th className="px-2 py-2 text-right">现价</th>
+                        <th className="px-2 py-2 text-right">市值</th>
+                        <th className="px-2 py-2 text-right">当前权重</th>
+                        <th className="px-2 py-2 text-right">目标权重</th>
+                        <th className="px-2 py-2 text-right">偏离</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {positionsView.rows.map((r) => (
+                        <tr key={r.code} className="border-t">
+                          <td className="px-2 py-2">{r.name} <span className="text-slate-400">({r.code})</span></td>
+                          <td className="px-2 py-2 text-right">{toNumber(r.shares, 4)}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(r.cost, 4)}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(r.price, 4)}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(r.market_value, 2)}</td>
+                          <td className="px-2 py-2 text-right">{toPercent(r.current_weight)}</td>
+                          <td className="px-2 py-2 text-right">{toPercent(r.target_weight)}</td>
+                          <td className="px-2 py-2 text-right">{toPercent(r.deviation)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {loadingBase ? (
+                <div className="text-sm text-slate-500">调仓指令加载中...</div>
+              ) : (
+                <div className="overflow-x-auto border rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="px-2 py-2 text-left">标的</th>
+                        <th className="px-2 py-2 text-right">操作</th>
+                        <th className="px-2 py-2 text-right">调整份额</th>
+                        <th className="px-2 py-2 text-right">交易金额</th>
+                        <th className="px-2 py-2 text-right">手续费</th>
+                        <th className="px-2 py-2 text-right">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.slice(0, 80).map((o) => (
+                        <tr key={o.id} className="border-t">
+                          <td className="px-2 py-2">{o.fund_name || o.fund_code} <span className="text-slate-400">({o.fund_code})</span></td>
+                          <td className="px-2 py-2 text-right">{o.action === 'buy' ? '买入' : o.action === 'sell' ? '卖出' : '保持'}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(o.delta_shares, 4)}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(o.trade_amount, 2)}</td>
+                          <td className="px-2 py-2 text-right">{toNumber(o.fee, 2)}</td>
+                          <td className="px-2 py-2 text-right">
+                            <select
+                              value={o.status}
+                              onChange={(e) => handleOrderStatus(o.id, e.target.value)}
+                              className="border rounded px-2 py-1"
+                            >
+                              <option value="suggested">待执行</option>
+                              <option value="executed">已执行</option>
+                              <option value="skipped">跳过</option>
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === 'announcements' && (
+            <div className="rounded-lg border border-dashed p-6 text-sm text-slate-500">公告模块待接入。后续会按本策略持仓范围汇总相关基金/ETF公告。</div>
+          )}
+
+          {tab === 'news' && (
+            <div className="rounded-lg border border-dashed p-6 text-sm text-slate-500">资讯模块待接入。后续会按本策略持仓范围汇总ETF与行业资讯。</div>
           )}
         </div>
       )}
 
       {createOpen && (
         <Modal title="新建策略" onClose={() => setCreateOpen(false)}>
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-              <input
-                value={createForm.name}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))}
-                className="border rounded-lg px-3 py-2 text-sm"
-                placeholder="策略名称"
-              />
-              <input
-                value={createForm.benchmark}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, benchmark: e.target.value }))}
-                className="border rounded-lg px-3 py-2 text-sm"
-                placeholder="基准代码"
-              />
-              <input
-                value={createForm.feeRate}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, feeRate: e.target.value }))}
-                className="border rounded-lg px-3 py-2 text-sm"
-                placeholder="费率，如0.0015"
-              />
-            </div>
-
-            <div className="border rounded-lg p-3">
-              <div className="font-medium text-sm mb-2">1) 关联策略持仓范围（从当前账户勾选）</div>
-              <div className="max-h-40 overflow-auto grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                {accountPositions.map((p) => (
-                  <label key={p.code} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={createForm.selectedCodes.includes(p.code)}
-                      onChange={() => setCreateForm((prev) => ({
-                        ...prev,
-                        selectedCodes: toggleCode(prev.selectedCodes, p.code),
-                      }))}
-                    />
-                    <span>{p.code}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="border rounded-lg p-3">
-              <div className="font-medium text-sm mb-2">2) 填写目标权重</div>
-              <textarea
-                value={createForm.holdingsText}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, holdingsText: e.target.value }))}
-                className="w-full border rounded-lg px-3 py-2 text-sm h-36"
-                placeholder={'每行一个标的，例如\n513330 25%\n518880 20%'}
-              />
-              <div className="flex gap-2 mt-2">
-                <button type="button" onClick={applySample} className="px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50">
-                  填充全天候示例
-                </button>
-                <button
-                  type="button"
-                  onClick={() => importFromSelectedPositions(createForm.selectedCodes, setCreateForm)}
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"
-                >
-                  按已选持仓当前权重导入
-                </button>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setCreateOpen(false)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
-              <button type="submit" className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700">创建策略</button>
-            </div>
-          </form>
+          <StrategyBuilder
+            mode="create"
+            onClose={() => setCreateOpen(false)}
+            onSubmit={handleCreateStrategy}
+            accountPositions={accountPositions}
+          />
         </Modal>
       )}
 
-      {updateOpen && (
-        <Modal title="更新策略（发布新一期组合）" onClose={() => setUpdateOpen(false)}>
-          <form onSubmit={handleUpdateStrategy} className="space-y-4">
-            <input
-              value={updateForm.note}
-              onChange={(e) => setUpdateForm((prev) => ({ ...prev, note: e.target.value }))}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-              placeholder="版本备注，如：2026Q1再平衡"
-            />
-
-            <div className="border rounded-lg p-3">
-              <div className="font-medium text-sm mb-2">1) 调整策略关联持仓范围</div>
-              <div className="max-h-40 overflow-auto grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                {accountPositions.map((p) => (
-                  <label key={p.code} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={updateForm.selectedCodes.includes(p.code)}
-                      onChange={() => setUpdateForm((prev) => ({
-                        ...prev,
-                        selectedCodes: toggleCode(prev.selectedCodes, p.code),
-                      }))}
-                    />
-                    <span>{p.code}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="border rounded-lg p-3">
-              <div className="font-medium text-sm mb-2">2) 输入新一期目标权重</div>
-              <textarea
-                value={updateForm.holdingsText}
-                onChange={(e) => setUpdateForm((prev) => ({ ...prev, holdingsText: e.target.value }))}
-                className="w-full border rounded-lg px-3 py-2 text-sm h-36"
-                placeholder={'每行一个标的，例如\n513330 25%\n518880 20%'}
-              />
-              <div className="flex gap-2 mt-2">
-                <button
-                  type="button"
-                  onClick={() => importFromSelectedPositions(updateForm.selectedCodes, setUpdateForm)}
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"
-                >
-                  按已选持仓当前权重导入
-                </button>
-              </div>
-            </div>
-
-            <div className="text-xs text-slate-500">提交后会自动生成新的调仓指令。</div>
-
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setUpdateOpen(false)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
-              <button type="submit" className="px-3 py-2 rounded-lg bg-slate-800 text-white text-sm hover:bg-black">更新策略并生成调仓</button>
-            </div>
-          </form>
+      {updateOpen && detail && (
+        <Modal title="发布新一期组合" onClose={() => setUpdateOpen(false)}>
+          <StrategyBuilder
+            mode="update"
+            onClose={() => setUpdateOpen(false)}
+            onSubmit={handleUpdateStrategy}
+            accountPositions={accountPositions}
+            initialRows={(detail.active_holdings || []).map((h) => ({ code: h.code, name: '', weight: (h.weight * 100).toFixed(2) }))}
+            initialScope={detail.portfolio?.scope_codes || []}
+          />
         </Modal>
       )}
     </div>

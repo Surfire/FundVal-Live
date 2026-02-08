@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 RISK_FREE_RATE = 0.02
 TRADING_DAYS_PER_YEAR = 252
+PERF_CACHE_TTL_SECONDS = 60
+
+_PERF_CACHE: Dict[Tuple[int, int], Tuple[float, Dict[str, Any]]] = {}
 
 
 def _parse_weight(value: Any) -> float:
@@ -93,6 +97,16 @@ def _to_date(d: Optional[str]) -> date:
         return datetime.strptime(d, "%Y-%m-%d").date()
     except Exception:
         return date.today()
+
+
+def _invalidate_perf_cache(portfolio_id: Optional[int] = None):
+    if portfolio_id is None:
+        _PERF_CACHE.clear()
+        return
+
+    keys = [k for k in _PERF_CACHE.keys() if k[0] == portfolio_id]
+    for k in keys:
+        _PERF_CACHE.pop(k, None)
 
 
 def _fetch_account_positions(account_id: int, code_scope: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -267,6 +281,7 @@ def create_portfolio(
         )
 
         conn.commit()
+        _invalidate_perf_cache(portfolio_id)
         return {
             "id": portfolio_id,
             "active_version_id": version_id,
@@ -331,6 +346,7 @@ def create_strategy_version(
         )
 
         conn.commit()
+        _invalidate_perf_cache(portfolio_id)
         return {
             "id": version_id,
             "version_no": version_no,
@@ -484,6 +500,7 @@ def generate_rebalance_orders(
                 ],
             )
             conn.commit()
+            _invalidate_perf_cache(portfolio_id)
         except Exception:
             conn.rollback()
             raise
@@ -547,8 +564,9 @@ def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM rebalance_orders WHERE id = ?", (order_id,))
-    if not cursor.fetchone():
+    cursor.execute("SELECT id, portfolio_id FROM rebalance_orders WHERE id = ?", (order_id,))
+    row = cursor.fetchone()
+    if not row:
         conn.close()
         raise ValueError("order not found")
 
@@ -563,7 +581,102 @@ def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
     )
     conn.commit()
     conn.close()
+    _invalidate_perf_cache(int(row["portfolio_id"]))
     return {"ok": True}
+
+
+def delete_portfolio(portfolio_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM strategy_portfolios WHERE id = ?", (portfolio_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise ValueError("strategy portfolio not found")
+
+    try:
+        # Explicit delete to avoid relying on foreign_key pragma.
+        cursor.execute("SELECT id FROM strategy_versions WHERE portfolio_id = ?", (portfolio_id,))
+        version_ids = [int(r["id"]) for r in cursor.fetchall()]
+
+        if version_ids:
+            placeholders = ",".join(["?"] * len(version_ids))
+            cursor.execute(
+                f"DELETE FROM strategy_holdings WHERE version_id IN ({placeholders})",
+                version_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM rebalance_orders WHERE version_id IN ({placeholders})",
+                version_ids,
+            )
+
+        cursor.execute("DELETE FROM rebalance_orders WHERE portfolio_id = ?", (portfolio_id,))
+        cursor.execute("DELETE FROM strategy_versions WHERE portfolio_id = ?", (portfolio_id,))
+        cursor.execute("DELETE FROM strategy_portfolios WHERE id = ?", (portfolio_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    _invalidate_perf_cache(portfolio_id)
+    return {"ok": True}
+
+
+def get_portfolio_positions_view(portfolio_id: int, account_id: int) -> Dict[str, Any]:
+    detail = get_portfolio_detail(portfolio_id)
+    active_holdings = detail.get("active_holdings", [])
+    target_map = {h["code"]: float(h["weight"]) for h in active_holdings}
+
+    linked_scope = set(detail["portfolio"].get("scope_codes") or [])
+    scope = sorted(linked_scope | set(target_map.keys()))
+
+    positions = _fetch_account_positions(account_id, scope if scope else None)
+    position_map = {p["code"]: p for p in positions}
+
+    price_map: Dict[str, float] = {}
+    name_map: Dict[str, str] = {}
+    for code in scope:
+        price, name, _ = _get_price_and_name(code)
+        if price and price > 0:
+            price_map[code] = price
+        name_map[code] = name
+
+    total_value = sum(position_map.get(code, {}).get("shares", 0.0) * price_map.get(code, 0.0) for code in scope)
+    if total_value <= 0:
+        total_value = 0.0
+
+    rows = []
+    for code in scope:
+        pos = position_map.get(code, {"shares": 0.0, "cost": 0.0})
+        shares = float(pos.get("shares", 0.0))
+        cost = float(pos.get("cost", 0.0))
+        price = float(price_map.get(code, 0.0))
+        market_value = shares * price
+        current_weight = market_value / total_value if total_value > 0 else 0.0
+        target_weight = float(target_map.get(code, 0.0))
+
+        rows.append({
+            "code": code,
+            "name": name_map.get(code, code),
+            "shares": round(shares, 4),
+            "cost": round(cost, 4),
+            "price": round(price, 4),
+            "market_value": round(market_value, 2),
+            "current_weight": round(current_weight, 6),
+            "target_weight": round(target_weight, 6),
+            "deviation": round(current_weight - target_weight, 6),
+        })
+
+    rows.sort(key=lambda x: x["market_value"], reverse=True)
+    return {
+        "rows": rows,
+        "summary": {
+            "scope_codes": scope,
+            "total_market_value": round(total_value, 2),
+            "position_count": len([r for r in rows if r["shares"] > 0]),
+        }
+    }
 
 
 def _get_cached_history_series(code: str, start_date: pd.Timestamp) -> pd.Series:
@@ -781,6 +894,12 @@ def _estimate_intraday_rate(weight_map: Dict[str, float]) -> Optional[float]:
 
 
 def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:
+    cache_key = (portfolio_id, account_id)
+    now = time.time()
+    cached = _PERF_CACHE.get(cache_key)
+    if cached and now - cached[0] <= PERF_CACHE_TTL_SECONDS:
+        return cached[1]
+
     detail = get_portfolio_detail(portfolio_id)
     holdings = detail.get("active_holdings", [])
     strategy_weights = {h["code"]: float(h["weight"]) for h in holdings}
@@ -821,7 +940,7 @@ def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:
     if not benchmark_curve:
         benchmark_curve = [{"date": start_date.strftime("%Y-%m-%d"), "return": 0.0}]
 
-    return {
+    result = {
         "portfolio": detail["portfolio"],
         "active_version": detail.get("active_version"),
         "target_holdings": holdings,
@@ -850,3 +969,5 @@ def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:
             "benchmark": benchmark_curve,
         },
     }
+    _PERF_CACHE[cache_key] = (now, result)
+    return result
