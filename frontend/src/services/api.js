@@ -194,3 +194,50 @@ export const getPreferences = async () => {
 export const updatePreferences = async (data) => {
     return api.post('/preferences', data);
 };
+
+// Strategy portfolio
+export const listStrategyPortfolios = async (accountId = null) => {
+    const params = {};
+    if (accountId) params.account_id = accountId;
+    const response = await api.get('/strategy/portfolios', { params });
+    return response.data.portfolios || [];
+};
+
+export const createStrategyPortfolio = async (data) => {
+    const response = await api.post('/strategy/portfolios', data);
+    return response.data;
+};
+
+export const getStrategyPortfolio = async (portfolioId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}`);
+    return response.data;
+};
+
+export const createStrategyVersion = async (portfolioId, data) => {
+    const response = await api.post(`/strategy/portfolios/${portfolioId}/versions`, data);
+    return response.data;
+};
+
+export const getStrategyPerformance = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/performance`, {
+        params: { account_id: accountId }
+    });
+    return response.data;
+};
+
+export const generateStrategyRebalance = async (portfolioId, data) => {
+    const response = await api.post(`/strategy/portfolios/${portfolioId}/rebalance`, data);
+    return response.data;
+};
+
+export const listRebalanceOrders = async (portfolioId, accountId, status = null) => {
+    const params = { account_id: accountId };
+    if (status) params.status = status;
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/rebalance-orders`, { params });
+    return response.data.orders || [];
+};
+
+export const updateRebalanceOrderStatus = async (orderId, status) => {
+    const response = await api.post(`/strategy/rebalance-orders/${orderId}/status`, { status });
+    return response.data;
+};
