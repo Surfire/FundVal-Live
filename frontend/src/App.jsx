@@ -5,12 +5,14 @@ import {
   Wallet,
   LayoutGrid,
   Settings as SettingsIcon,
-  Users
+  Users,
+  Target
 } from 'lucide-react';
 import { FundList } from './pages/FundList';
 import { FundDetail } from './pages/FundDetail';
 import Account from './pages/Account';
 import Settings from './pages/Settings';
+import Strategy from './pages/Strategy';
 import { SubscribeModal } from './components/SubscribeModal';
 import { AccountModal } from './components/AccountModal';
 import { searchFunds, getFundDetail, getAccountPositions, subscribeFund, getAccounts, getPreferences, updatePreferences } from './services/api';
@@ -20,7 +22,7 @@ const APP_VERSION = packageJson.version;
 
 export default function App() {
   // --- State ---
-  const [currentView, setCurrentView] = useState('list'); // 'list' | 'detail' | 'account' | 'settings'
+  const [currentView, setCurrentView] = useState('list'); // 'list' | 'detail' | 'account' | 'strategy' | 'settings'
   const [currentAccount, setCurrentAccount] = useState(1);
   const [accounts, setAccounts] = useState([]);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
@@ -32,6 +34,7 @@ export default function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedFund, setSelectedFund] = useState(null);
   const [detailFundId, setDetailFundId] = useState(null);
+  const [detailReturnView, setDetailReturnView] = useState('list');
   const [accountCodes, setAccountCodes] = useState(new Set());
 
   // Load preferences from backend on mount
@@ -267,14 +270,32 @@ export default function App() {
     setModalOpen(true);
   };
 
-  const handleCardClick = (fundId) => {
-    setDetailFundId(fundId);
+  const handleCardClick = async (fundId) => {
+    let id = fundId;
+    if (typeof fundId === 'number') id = String(fundId);
+
+    const exists = watchlist.find((f) => f.id === id);
+    if (!exists) {
+      try {
+        const detail = await getFundDetail(id);
+        setWatchlist((prev) => {
+          if (prev.find((f) => f.id === id)) return prev;
+          return [...prev, { ...detail, id, trusted: true }];
+        });
+      } catch (e) {
+        alert('无法加载该基金详情');
+        return;
+      }
+    }
+
+    setDetailReturnView(currentView === 'detail' ? detailReturnView : currentView);
+    setDetailFundId(id);
     setCurrentView('detail');
     window.scrollTo(0, 0);
   };
 
   const handleBack = () => {
-    setCurrentView('list');
+    setCurrentView(detailReturnView || 'list');
     setDetailFundId(null);
   };
 
@@ -368,11 +389,17 @@ export default function App() {
                    >
                       <SettingsIcon className="w-6 h-6" />
                    </button>
+                   <button
+                      onClick={() => setCurrentView('strategy')}
+                      className={`p-2 rounded-lg transition-colors ${currentView === 'strategy' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`}
+                   >
+                      <Target className="w-6 h-6" />
+                   </button>
                 </div>
               )}
 
               {/* Account Selector */}
-              {currentView === 'account' && accounts.length > 0 && (
+              {(currentView === 'account' || currentView === 'strategy') && accounts.length > 0 && (
                 <div className="flex items-center gap-2 ml-4">
                   <select
                     value={currentAccount}
@@ -396,7 +423,13 @@ export default function App() {
 
               <div>
                 <h1 className="text-lg font-bold text-slate-800 leading-tight">
-                  {currentView === 'detail' ? '基金详情' : (currentView === 'account' ? '我的账户' : (currentView === 'settings' ? '设置' : 'FundVal Live'))}
+                  {currentView === 'detail'
+                    ? '基金详情'
+                    : (currentView === 'account'
+                        ? '我的账户'
+                        : (currentView === 'settings'
+                            ? '设置'
+                            : (currentView === 'strategy' ? '策略组合' : 'FundVal Live')))}
                 </h1>
                 <p className="text-xs text-slate-400">
                   {currentView === 'detail' ? '盘中实时估值分析' : '盘中估值参考工具'}
@@ -476,6 +509,14 @@ export default function App() {
 
         {currentView === 'settings' && (
           <Settings />
+        )}
+
+        {currentView === 'strategy' && (
+          <Strategy
+            currentAccount={currentAccount === 0 ? 1 : currentAccount}
+            isActive={currentView === 'strategy'}
+            onSelectFund={handleCardClick}
+          />
         )}
 
         {currentView === 'detail' && (

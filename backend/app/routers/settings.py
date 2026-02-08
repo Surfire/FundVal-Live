@@ -55,6 +55,7 @@ def get_settings():
                 "OPENAI_API_KEY": "***" if Config.OPENAI_API_KEY else "",
                 "OPENAI_API_BASE": Config.OPENAI_API_BASE,
                 "AI_MODEL_NAME": Config.AI_MODEL_NAME,
+                "OCR_MODEL_NAME": Config.OCR_MODEL_NAME,
                 "SMTP_HOST": Config.SMTP_HOST,
                 "SMTP_PORT": str(Config.SMTP_PORT),
                 "SMTP_USER": Config.SMTP_USER,

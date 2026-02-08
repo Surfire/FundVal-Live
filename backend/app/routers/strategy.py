@@ -1,0 +1,303 @@
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from ..services.strategy import (
+    complete_rebalance_batch,
+    create_portfolio,
+    create_strategy_version,
+    delete_portfolio,
+    execute_rebalance_order,
+    generate_rebalance_orders,
+    get_performance,
+    get_portfolio_detail,
+    get_portfolio_positions_view,
+    get_portfolio_scope_candidates,
+    list_portfolios,
+    list_rebalance_batches,
+    list_rebalance_orders,
+    recognize_holdings_from_image,
+    update_portfolio_scope,
+    update_rebalance_order_status,
+)
+
+router = APIRouter()
+
+
+class HoldingModel(BaseModel):
+    code: str = Field(..., min_length=1, max_length=20)
+    weight: float = Field(..., gt=0)
+
+
+class CreatePortfolioModel(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    account_id: int = Field(..., ge=1)
+    holdings: List[HoldingModel] = Field(..., min_length=1)
+    benchmark: str = "000300"
+    fee_rate: float = Field(0.001, ge=0, le=0.02)
+    effective_date: Optional[str] = None
+    note: str = ""
+    scope_codes: Optional[List[str]] = None
+
+
+class CreateVersionModel(BaseModel):
+    holdings: List[HoldingModel] = Field(..., min_length=1)
+    effective_date: Optional[str] = None
+    note: str = ""
+    activate: bool = True
+    scope_codes: Optional[List[str]] = None
+    benchmark: Optional[str] = None
+    fee_rate: Optional[float] = Field(None, ge=0, le=0.02)
+
+
+class RebalanceModel(BaseModel):
+    account_id: int = Field(..., ge=1)
+    min_deviation: float = Field(0.005, ge=0, le=0.2)
+    fee_rate: Optional[float] = Field(None, ge=0, le=0.02)
+    lot_size: int = Field(1, ge=1, le=100000)
+    capital_adjustment: float = 0
+    title: Optional[str] = None
+    persist: bool = True
+
+
+class OrderStatusModel(BaseModel):
+    status: str = Field(..., pattern="^(suggested|executed|skipped)$")
+
+
+class ScopeUpdateModel(BaseModel):
+    scope_codes: List[str] = Field(default_factory=list)
+
+class ExecuteOrderModel(BaseModel):
+    executed_shares: float = Field(..., gt=0)
+    executed_price: float = Field(..., gt=0)
+    note: str = ""
+
+
+class OCRImageModel(BaseModel):
+    image_data_url: str = Field(..., min_length=20)
+
+
+@router.get("/strategy/portfolios")
+def api_list_portfolios(account_id: Optional[int] = Query(None)):
+    try:
+        return {"portfolios": list_portfolios(account_id=account_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/portfolios")
+def api_create_portfolio(data: CreatePortfolioModel):
+    try:
+        result = create_portfolio(
+            name=data.name,
+            account_id=data.account_id,
+            holdings=[h.model_dump() for h in data.holdings],
+            benchmark=data.benchmark,
+            fee_rate=data.fee_rate,
+            effective_date=data.effective_date,
+            note=data.note,
+            scope_codes=data.scope_codes,
+        )
+        return {"ok": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}")
+def api_get_portfolio(portfolio_id: int):
+    try:
+        return get_portfolio_detail(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/strategy/portfolios/{portfolio_id}")
+def api_delete_portfolio(portfolio_id: int):
+    try:
+        return delete_portfolio(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/portfolios/{portfolio_id}/delete")
+def api_delete_portfolio_post(portfolio_id: int):
+    try:
+        return delete_portfolio(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/portfolios/{portfolio_id}/versions")
+def api_create_version(portfolio_id: int, data: CreateVersionModel):
+    try:
+        result = create_strategy_version(
+            portfolio_id=portfolio_id,
+            holdings=[h.model_dump() for h in data.holdings],
+            effective_date=data.effective_date,
+            note=data.note,
+            activate=data.activate,
+            scope_codes=data.scope_codes,
+            benchmark=data.benchmark,
+            fee_rate=data.fee_rate,
+        )
+        return {"ok": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/strategy/portfolios/{portfolio_id}/scope")
+def api_update_portfolio_scope(portfolio_id: int, data: ScopeUpdateModel):
+    try:
+        return update_portfolio_scope(portfolio_id, data.scope_codes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/performance")
+def api_get_performance(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return get_performance(portfolio_id, account_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/positions")
+def api_get_positions_view(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return get_portfolio_positions_view(portfolio_id, account_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/scope-candidates")
+def api_get_scope_candidates(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return {"rows": get_portfolio_scope_candidates(portfolio_id, account_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/holdings-ocr")
+def api_recognize_holdings(data: OCRImageModel):
+    try:
+        return recognize_holdings_from_image(data.image_data_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/portfolios/{portfolio_id}/rebalance")
+def api_generate_rebalance(portfolio_id: int, data: RebalanceModel):
+    try:
+        return generate_rebalance_orders(
+            portfolio_id=portfolio_id,
+            account_id=data.account_id,
+            min_deviation=data.min_deviation,
+            fee_rate=data.fee_rate,
+            lot_size=data.lot_size,
+            capital_adjustment=data.capital_adjustment,
+            batch_title=data.title,
+            persist=data.persist,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/rebalance-orders")
+def api_list_rebalance_orders(
+    portfolio_id: int,
+    account_id: int = Query(..., ge=1),
+    status: Optional[str] = Query(None),
+    batch_id: Optional[int] = Query(None, ge=1),
+):
+    try:
+        return {
+            "orders": list_rebalance_orders(
+                portfolio_id=portfolio_id,
+                account_id=account_id,
+                status=status,
+                batch_id=batch_id,
+            )
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-orders/{order_id}/status")
+def api_update_order_status(order_id: int, data: OrderStatusModel):
+    try:
+        return update_rebalance_order_status(order_id, data.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-orders/{order_id}/execute")
+def api_execute_order(order_id: int, data: ExecuteOrderModel):
+    try:
+        return execute_rebalance_order(
+            order_id=order_id,
+            executed_shares=data.executed_shares,
+            executed_price=data.executed_price,
+            note=data.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-orders/{order_id}/apply")
+def api_apply_order(order_id: int, data: ExecuteOrderModel):
+    try:
+        return execute_rebalance_order(
+            order_id=order_id,
+            executed_shares=data.executed_shares,
+            executed_price=data.executed_price,
+            note=data.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy/portfolios/{portfolio_id}/rebalance-batches")
+def api_list_rebalance_batches(portfolio_id: int, account_id: int = Query(..., ge=1)):
+    try:
+        return {"batches": list_rebalance_batches(portfolio_id, account_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-batches/{batch_id}/complete")
+def api_complete_rebalance_batch(batch_id: int):
+    try:
+        return complete_rebalance_batch(batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

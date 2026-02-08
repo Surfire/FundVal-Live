@@ -194,3 +194,120 @@ export const getPreferences = async () => {
 export const updatePreferences = async (data) => {
     return api.post('/preferences', data);
 };
+
+// Strategy portfolio
+export const listStrategyPortfolios = async (accountId = null) => {
+    const params = {};
+    if (accountId) params.account_id = accountId;
+    const response = await api.get('/strategy/portfolios', { params });
+    return response.data.portfolios || [];
+};
+
+export const createStrategyPortfolio = async (data) => {
+    const response = await api.post('/strategy/portfolios', data);
+    return response.data;
+};
+
+export const getStrategyPortfolio = async (portfolioId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}`);
+    return response.data;
+};
+
+export const deleteStrategyPortfolio = async (portfolioId) => {
+    try {
+        const response = await api.delete(`/strategy/portfolios/${portfolioId}`);
+        return response.data;
+    } catch (error) {
+        // Backward compatible fallback when backend method table is stale.
+        if (error?.response?.status === 405) {
+            const response = await api.post(`/strategy/portfolios/${portfolioId}/delete`);
+            return response.data;
+        }
+        throw error;
+    }
+};
+
+export const createStrategyVersion = async (portfolioId, data) => {
+    const response = await api.post(`/strategy/portfolios/${portfolioId}/versions`, data);
+    return response.data;
+};
+
+export const updateStrategyScope = async (portfolioId, scopeCodes) => {
+    const response = await api.patch(`/strategy/portfolios/${portfolioId}/scope`, {
+        scope_codes: scopeCodes || []
+    });
+    return response.data;
+};
+
+export const getStrategyPerformance = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/performance`, {
+        params: { account_id: accountId }
+    });
+    return response.data;
+};
+
+export const getStrategyPositionsView = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/positions`, {
+        params: { account_id: accountId }
+    });
+    return response.data;
+};
+
+export const getStrategyScopeCandidates = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/scope-candidates`, {
+        params: { account_id: accountId }
+    });
+    return response.data.rows || [];
+};
+
+export const recognizeStrategyHoldingsFromImage = async (imageDataUrl) => {
+    const response = await api.post('/strategy/holdings-ocr', {
+        image_data_url: imageDataUrl
+    });
+    return response.data;
+};
+
+export const generateStrategyRebalance = async (portfolioId, data) => {
+    const response = await api.post(`/strategy/portfolios/${portfolioId}/rebalance`, data);
+    return response.data;
+};
+
+export const listRebalanceOrders = async (portfolioId, accountId, status = null, batchId = null) => {
+    const params = { account_id: accountId };
+    if (status) params.status = status;
+    if (batchId) params.batch_id = batchId;
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/rebalance-orders`, { params });
+    const rows = response.data.orders || [];
+    if (batchId) return rows.filter((r) => Number(r.batch_id) === Number(batchId));
+    return rows;
+};
+
+export const updateRebalanceOrderStatus = async (orderId, status) => {
+    const response = await api.post(`/strategy/rebalance-orders/${orderId}/status`, { status });
+    return response.data;
+};
+
+export const executeRebalanceOrder = async (orderId, data) => {
+    try {
+        const response = await api.post(`/strategy/rebalance-orders/${orderId}/execute`, data);
+        return response.data;
+    } catch (error) {
+        if (error?.response?.status === 405) {
+            const response = await api.post(`/strategy/rebalance-orders/${orderId}/apply`, data);
+            return response.data;
+        }
+        throw error;
+    }
+};
+
+export const listRebalanceBatches = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/rebalance-batches`, {
+        params: { account_id: accountId }
+    });
+    return response.data.batches || [];
+};
+
+export const completeRebalanceBatch = async (batchId) => {
+    const response = await api.post(`/strategy/rebalance-batches/${batchId}/complete`);
+    return response.data;
+};

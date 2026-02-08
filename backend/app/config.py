@@ -72,6 +72,7 @@ class Config:
     OPENAI_API_KEY = _get_setting("OPENAI_API_KEY", "")
     OPENAI_API_BASE = _get_setting("OPENAI_API_BASE", "https://api.openai.com/v1")
     AI_MODEL_NAME = _get_setting("AI_MODEL_NAME", "gpt-3.5-turbo")
+    OCR_MODEL_NAME = _get_setting("OCR_MODEL_NAME", "Qwen/Qwen3-VL-32B-Instruct")
 
     # Email / Subscription Configuration - 动态读取
     SMTP_HOST = _get_setting("SMTP_HOST", "smtp.gmail.com")
@@ -86,9 +87,9 @@ class Config:
         cls.OPENAI_API_KEY = _get_setting("OPENAI_API_KEY", "")
         cls.OPENAI_API_BASE = _get_setting("OPENAI_API_BASE", "https://api.openai.com/v1")
         cls.AI_MODEL_NAME = _get_setting("AI_MODEL_NAME", "gpt-3.5-turbo")
+        cls.OCR_MODEL_NAME = _get_setting("OCR_MODEL_NAME", "Qwen/Qwen3-VL-32B-Instruct")
         cls.SMTP_HOST = _get_setting("SMTP_HOST", "smtp.gmail.com")
         cls.SMTP_PORT = int(_get_setting("SMTP_PORT", "587"))
         cls.SMTP_USER = _get_setting("SMTP_USER", "")
         cls.SMTP_PASSWORD = _get_setting("SMTP_PASSWORD", "")
         cls.EMAIL_FROM = _get_setting("EMAIL_FROM", "noreply@fundval.live")
-

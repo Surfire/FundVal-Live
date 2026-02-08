@@ -1,25 +1,36 @@
 import os
 import re
 import datetime
+import json
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, List
 from duckduckgo_search import DDGS
-from langchain_openai import ChatOpenAI
-from langchain_core.output_parsers import StrOutputParser
+import requests
 
 from ..config import Config
-from .prompts import LINUS_FINANCIAL_ANALYSIS_PROMPT
 from .fund import get_fund_history, _calculate_technical_indicators
 from ..db import get_db_connection
 
 
 class AIService:
+    _FALLBACK_SYSTEM_PROMPT = (
+        "你是专业基金分析助手。请基于输入数据输出客观、简洁的分析结论，并只返回 JSON。"
+    )
+    _FALLBACK_USER_PROMPT = (
+        "请分析以下基金数据：\n"
+        "基金代码: {fund_code}\n基金名称: {fund_name}\n基金类型: {fund_type}\n基金经理: {manager}\n"
+        "最新净值: {nav}\n实时估值: {estimate}\n估值涨跌: {est_rate}\n"
+        "夏普: {sharpe}\n波动率: {volatility}\n最大回撤: {max_drawdown}\n年化收益: {annual_return}\n"
+        "持仓集中度: {concentration}\n持仓摘要: {holdings}\n历史摘要: {history_summary}\n"
+        "输出 JSON，字段: summary, risk_level, analysis_report, suggestions"
+    )
+
     def __init__(self):
         # 不在初始化时创建 LLM，而是每次调用时动态创建
         pass
 
-    def _get_prompt_template(self, prompt_id: Optional[int] = None):
+    def _get_prompt_texts(self, prompt_id: Optional[int] = None):
         """
         Get prompt template from database.
         If prompt_id is None, use the default template.
@@ -39,33 +50,48 @@ class AIService:
         row = cursor.fetchone()
         conn.close()
 
-        if not row:
-            # Fallback to hardcoded prompt
-            return LINUS_FINANCIAL_ANALYSIS_PROMPT
+        if row:
+            return row["system_prompt"], row["user_prompt"]
 
-        # Build ChatPromptTemplate from database
-        from langchain_core.prompts import ChatPromptTemplate
-        return ChatPromptTemplate.from_messages([
-            ("system", row["system_prompt"]),
-            ("user", row["user_prompt"])
-        ])
+        # Fallback to built-in prompt text
+        return self._FALLBACK_SYSTEM_PROMPT, self._FALLBACK_USER_PROMPT
 
-    def _init_llm(self, fast_mode=True):
-        # 每次调用时重新读取配置，支持热重载
-        api_base = Config.OPENAI_API_BASE
-        api_key = Config.OPENAI_API_KEY
-        model = Config.AI_MODEL_NAME
-
+    def _call_chat_completions(self, system_prompt: str, user_prompt: str, timeout_sec: int = 90) -> str:
+        api_base = str(Config.OPENAI_API_BASE or "").strip().rstrip("/")
+        api_key = str(Config.OPENAI_API_KEY or "").strip()
+        model = str(Config.AI_MODEL_NAME or "").strip() or "gpt-3.5-turbo"
         if not api_key:
-            return None
+            raise ValueError("未配置 API Key")
+        if not api_base:
+            raise ValueError("未配置 API Base")
 
-        return ChatOpenAI(
-            model=model,
-            openai_api_key=api_key,
-            openai_api_base=api_base,
-            temperature=0.3, # Linus needs to be sharp, not creative
-            request_timeout=60 if fast_mode else 120
-        )
+        url = f"{api_base}/chat/completions"
+        payload = {
+            "model": model,
+            "temperature": 0.3,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 1200,
+            "response_format": {"type": "json_object"},
+        }
+        # trust_env=False avoids local SOCKS proxy env and eliminates socksio dependency issues.
+        with requests.Session() as s:
+            s.trust_env = False
+            resp = s.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=timeout_sec,
+            )
+        if resp.status_code >= 400:
+            raise ValueError(f"LLM 接口失败: HTTP {resp.status_code} {resp.text[:200]}")
+        body = resp.json()
+        return str(body["choices"][0]["message"]["content"] or "")
 
     def search_news(self, query: str) -> str:
         try:
@@ -118,10 +144,7 @@ class AIService:
         }
 
     async def analyze_fund(self, fund_info: Dict[str, Any], prompt_id: Optional[int] = None) -> Dict[str, Any]:
-        # 每次调用时重新初始化 LLM，支持配置热重载
-        llm = self._init_llm()
-
-        if not llm:
+        if not Config.OPENAI_API_KEY:
             return {
                 "summary": "未配置 LLM API Key，无法进行分析。",
                 "risk_level": "未知",
@@ -195,14 +218,21 @@ class AIService:
             "history_summary": history_summary
         }
 
-        # 2. Get prompt template and replace variables
-        prompt_template = self._get_prompt_template(prompt_id)
-
-        # 3. Invoke LLM
-        chain = prompt_template | llm | StrOutputParser()
+        # 2. Build prompt text
+        system_prompt, user_template = self._get_prompt_texts(prompt_id)
+        try:
+            user_prompt = user_template.format(**variables)
+        except Exception:
+            user_prompt = (
+                f"基金信息: {fund_name}({fund_id})\n"
+                f"技术指标: {technical_indicators}\n"
+                f"历史: {history_summary}\n"
+                "请输出 JSON: {summary, risk_level, analysis_report, suggestions}"
+            )
 
         try:
-            raw_result = await chain.ainvoke(variables)
+            # 3. Invoke LLM through direct HTTP to avoid proxy/socks runtime issues.
+            raw_result = self._call_chat_completions(system_prompt, user_prompt, timeout_sec=90)
 
             # 4. Parse Result
             clean_json = raw_result.strip()
@@ -211,7 +241,6 @@ class AIService:
             elif "```" in clean_json:
                 clean_json = clean_json.split("```")[1].split("```")[0]
 
-            import json
             result = json.loads(clean_json)
 
             # Enrich with indicators for frontend display

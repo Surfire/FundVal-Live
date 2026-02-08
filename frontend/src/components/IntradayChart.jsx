@@ -74,8 +74,8 @@ export const IntradayChart = ({ fundId }) => {
         </div>
       </div>
 
-      <div className="h-64 w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="h-64 w-full min-h-[256px] min-w-0">
+        <ResponsiveContainer width="100%" height="100%" minHeight={256}>
           <LineChart
             data={chartData}
             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}

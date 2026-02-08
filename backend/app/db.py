@@ -93,6 +93,7 @@ def init_db():
         ('OPENAI_API_KEY', '', 1),
         ('OPENAI_API_BASE', 'https://api.openai.com/v1', 0),
         ('AI_MODEL_NAME', 'gpt-3.5-turbo', 0),
+        ('OCR_MODEL_NAME', 'Qwen/Qwen3-VL-32B-Instruct', 0),
         ('SMTP_HOST', 'smtp.gmail.com', 0),
         ('SMTP_PORT', '587', 0),
         ('SMTP_USER', '', 0),
@@ -396,6 +397,139 @@ def init_db():
         """)
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
+
+    # Migration: Strategy portfolio support
+    if current_version < 5:
+        logger.info("Running migration: adding strategy portfolio tables")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_portfolios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                account_id INTEGER NOT NULL,
+                benchmark TEXT DEFAULT '000300',
+                fee_rate REAL DEFAULT 0.001,
+                scope_codes TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_strategy_portfolios_account ON strategy_portfolios(account_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id INTEGER NOT NULL,
+                version_no INTEGER NOT NULL,
+                effective_date TEXT NOT NULL,
+                note TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (portfolio_id) REFERENCES strategy_portfolios(id) ON DELETE CASCADE,
+                UNIQUE(portfolio_id, version_no)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_strategy_versions_portfolio ON strategy_versions(portfolio_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_strategy_versions_active ON strategy_versions(portfolio_id, is_active)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_holdings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                fund_code TEXT NOT NULL,
+                target_weight REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (version_id) REFERENCES strategy_versions(id) ON DELETE CASCADE,
+                UNIQUE(version_id, fund_code)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_strategy_holdings_version ON strategy_holdings(version_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rebalance_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id INTEGER NOT NULL,
+                version_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                fund_code TEXT NOT NULL,
+                fund_name TEXT,
+                action TEXT NOT NULL,
+                target_weight REAL NOT NULL,
+                current_weight REAL NOT NULL,
+                target_shares REAL NOT NULL,
+                current_shares REAL NOT NULL,
+                delta_shares REAL NOT NULL,
+                price REAL NOT NULL,
+                trade_amount REAL NOT NULL,
+                fee REAL DEFAULT 0,
+                status TEXT DEFAULT 'suggested',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                executed_at TIMESTAMP,
+                FOREIGN KEY (portfolio_id) REFERENCES strategy_portfolios(id) ON DELETE CASCADE,
+                FOREIGN KEY (version_id) REFERENCES strategy_versions(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rebalance_orders_portfolio ON rebalance_orders(portfolio_id, account_id, status)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5)")
+
+    # Migration: strategy scope codes
+    if current_version < 6:
+        logger.info("Running migration: adding scope_codes to strategy_portfolios")
+        cursor.execute("PRAGMA table_info(strategy_portfolios)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "scope_codes" not in columns:
+            cursor.execute("ALTER TABLE strategy_portfolios ADD COLUMN scope_codes TEXT DEFAULT '[]'")
+            cursor.execute("UPDATE strategy_portfolios SET scope_codes = '[]' WHERE scope_codes IS NULL")
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6)")
+
+    # Migration: rebalance execution detail columns
+    if current_version < 7:
+        logger.info("Running migration: adding execution columns to rebalance_orders")
+        cursor.execute("PRAGMA table_info(rebalance_orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "executed_price" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_price REAL")
+        if "executed_shares" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_shares REAL")
+        if "executed_amount" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_amount REAL")
+        if "execution_note" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN execution_note TEXT")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7)")
+
+    # Migration: rebalance batches
+    if current_version < 8:
+        logger.info("Running migration: adding rebalance batches")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rebalance_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                version_id INTEGER,
+                source TEXT DEFAULT 'auto',
+                status TEXT DEFAULT 'pending',
+                title TEXT,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                FOREIGN KEY (portfolio_id) REFERENCES strategy_portfolios(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rebalance_batches_portfolio ON rebalance_batches(portfolio_id, account_id, status)")
+
+        cursor.execute("PRAGMA table_info(rebalance_orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "batch_id" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN batch_id INTEGER")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
 
     conn.commit()
     conn.close()

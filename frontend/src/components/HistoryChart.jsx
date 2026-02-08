@@ -137,7 +137,7 @@ export const HistoryChart = ({ fundId, accountId = null }) => {
         </div>
       )}
 
-      <div className="h-64 w-full min-h-[256px]">
+      <div className="h-64 w-full min-h-[256px] min-w-0">
         <ResponsiveContainer width="100%" height="100%" minHeight={256}>
           <AreaChart
             data={validData}

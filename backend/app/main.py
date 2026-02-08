@@ -11,7 +11,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 
-from .routers import funds, ai, account, settings, data
+from .routers import funds, ai, account, settings, data, strategy
 from .db import init_db
 from .services.scheduler import start_scheduler
 
@@ -132,6 +132,12 @@ app.include_router(ai.router, prefix="/api")
 app.include_router(account.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
+app.include_router(strategy.router, prefix="/api")
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
 
 # Project info endpoint
 @app.get("/api/info")
