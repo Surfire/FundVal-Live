@@ -53,7 +53,13 @@ def _normalize_holdings(holdings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _normalize_codes(codes: Optional[List[str]]) -> List[str]:
     if not codes:
         return []
-    out = sorted({str(c).strip() for c in codes if str(c).strip()})
+    out = sorted(
+        {
+            str(c).strip()
+            for c in codes
+            if str(c).strip() and len(str(c).strip()) >= 5
+        }
+    )
     return out
 
 

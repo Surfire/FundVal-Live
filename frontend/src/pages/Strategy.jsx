@@ -119,22 +119,22 @@ function StrategyBuilder({
   initialRows = [],
   initialScope = [],
 }) {
+  const makeRow = (init = {}) => ({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
+    code: '',
+    name: '',
+    weight: '',
+    ...init,
+  });
+
   const isCreate = mode === 'create';
   const [step, setStep] = useState(1);
   const [name, setName] = useState(initialName);
   const [benchmark, setBenchmark] = useState(initialBenchmark);
   const [feeRate, setFeeRate] = useState(initialFeeRate);
   const [note, setNote] = useState('');
-  const [rows, setRows] = useState(initialRows.length ? initialRows : [{ code: '', name: '', weight: '' }]);
+  const [rows, setRows] = useState(initialRows.length ? initialRows.map((r) => makeRow(r)) : [makeRow()]);
   const [selectedCodes, setSelectedCodes] = useState(initialScope);
-
-  useEffect(() => {
-    const targetCodes = rows.map((r) => r.code.trim()).filter(Boolean);
-    setSelectedCodes((prev) => {
-      const merged = new Set([...prev, ...targetCodes]);
-      return Array.from(merged);
-    });
-  }, [rows]);
 
   const toggleScope = (code) => {
     setSelectedCodes((prev) => {
@@ -143,31 +143,39 @@ function StrategyBuilder({
     });
   };
 
-  const addRow = () => setRows((prev) => [...prev, { code: '', name: '', weight: '' }]);
-  const removeRow = (idx) => setRows((prev) => prev.filter((_, i) => i !== idx));
+  const addRow = () => setRows((prev) => [...prev, makeRow()]);
+  const removeRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
 
   const resolveName = async (idx, code) => {
     const q = code.trim();
-    if (!q) return;
+    if (!q || q.length < 5) return;
     try {
       const results = await searchFunds(q);
       const exact = results.find((x) => x.id === q) || results[0];
       if (!exact) return;
-      setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, name: exact.name || r.name } : r)));
+      setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, code: exact.id || r.code, name: exact.name || r.name } : r)));
     } catch {
       // ignore
     }
   };
 
   const canGoStep2 = useMemo(() => {
-    const validRows = rows.filter((r) => r.code.trim() && Number(r.weight) > 0);
+    const validRows = rows.filter((r) => r.code.trim().length >= 5 && Number(r.weight) > 0);
     return validRows.length > 0;
   }, [rows]);
+
+  const goStep2 = () => {
+    const targetCodes = rows
+      .map((r) => r.code.trim())
+      .filter((code) => code.length >= 5);
+    setSelectedCodes((prev) => Array.from(new Set([...(prev || []), ...targetCodes])));
+    setStep(2);
+  };
 
   const submit = async (e) => {
     e.preventDefault();
     const holdings = rows
-      .filter((r) => r.code.trim() && Number(r.weight) > 0)
+      .filter((r) => r.code.trim().length >= 5 && Number(r.weight) > 0)
       .map((r) => ({ code: r.code.trim(), weight: Number(r.weight) }));
 
     if (!holdings.length) {
@@ -218,7 +226,7 @@ function StrategyBuilder({
               </thead>
               <tbody>
                 {rows.map((row, idx) => (
-                  <tr key={`${idx}-${row.code}`} className="border-t">
+                  <tr key={row.id} className="border-t">
                     <td className="px-2 py-2">
                       <input
                         value={row.code}
@@ -250,7 +258,7 @@ function StrategyBuilder({
                       />
                     </td>
                     <td className="px-2 py-2 text-right">
-                      <button type="button" onClick={() => removeRow(idx)} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">删除</button>
+                      <button type="button" onClick={() => removeRow(row.id)} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">删除</button>
                     </td>
                   </tr>
                 ))}
@@ -262,7 +270,7 @@ function StrategyBuilder({
 
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="px-3 py-2 border rounded-lg text-sm">取消</button>
-            <button type="button" onClick={() => setStep(2)} disabled={!canGoStep2} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">下一步</button>
+            <button type="button" onClick={goStep2} disabled={!canGoStep2} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">下一步</button>
           </div>
         </div>
       )}
