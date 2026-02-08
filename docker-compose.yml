@@ -1,7 +1,7 @@
 services:
   fundval:
     # 使用 GitHub Container Registry 镜像（推荐）
-    image: ghcr.io/ye-yu-mo/fundval-live:latest
+    image: ghcr.io/surfire/fundval-live:latest
 
     # 或本地构建
     # build: .

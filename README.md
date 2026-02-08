@@ -1,7 +1,7 @@
 # FundVal Live
 
-![GitHub stars](https://img.shields.io/github/stars/Ye-Yu-Mo/FundVal-Live?style=social)
-![GitHub views](https://komarev.com/ghpvc/?username=Ye-Yu-Mo&repo=FundVal-Live&color=blue&style=flat-square&label=views)
+![GitHub stars](https://img.shields.io/github/stars/Surfire/FundVal-Live?style=social)
+![GitHub views](https://komarev.com/ghpvc/?username=Surfire&repo=FundVal-Live&color=blue&style=flat-square&label=views)
 
 **盘中基金实时估值与逻辑审计系统**
 
@@ -60,7 +60,7 @@
 
 #### 下载
 
-前往 [Releases](https://github.com/Ye-Yu-Mo/FundVal-Live/releases/latest) 下载最新版本：
+前往 [Releases](https://github.com/Surfire/FundVal-Live/releases/latest) 下载最新版本：
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
@@ -140,10 +140,10 @@ sudo dpkg -i fundval-live_*_amd64.deb
 
 ```bash
 # 拉取镜像
-docker pull ghcr.io/ye-yu-mo/fundval-live:latest
+docker pull ghcr.io/surfire/fundval-live:latest
 
 # 启动服务（无 AI 分析）
-docker run -d -p 21345:21345 ghcr.io/ye-yu-mo/fundval-live:latest
+docker run -d -p 21345:21345 ghcr.io/surfire/fundval-live:latest
 
 # 访问 http://localhost:21345
 ```
@@ -158,10 +158,10 @@ docker run -d \
   -v fundval-data:/app/backend/data \
   -e OPENAI_API_KEY=your_api_key \
   -e OPENAI_API_BASE=https://api.openai.com/v1 \
-  ghcr.io/ye-yu-mo/fundval-live:latest
+  ghcr.io/surfire/fundval-live:latest
 
 # 或使用 docker-compose
-wget https://raw.githubusercontent.com/Ye-Yu-Mo/FundVal-Live/main/docker-compose.yml
+wget https://raw.githubusercontent.com/Surfire/FundVal-Live/main/docker-compose.yml
 docker-compose up -d
 ```
 
@@ -169,7 +169,7 @@ docker-compose up -d
 
 ```bash
 # 克隆项目
-git clone https://github.com/Ye-Yu-Mo/FundVal-Live.git
+git clone https://github.com/Surfire/FundVal-Live.git
 cd FundVal-Live
 
 # （可选）配置环境变量
@@ -360,4 +360,4 @@ flowchart TB
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Ye-Yu-Mo/FundVal-Live&type=date&legend=top-left)](https://www.star-history.com/#Ye-Yu-Mo/FundVal-Live&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=Surfire/FundVal-Live&type=date&legend=top-left)](https://www.star-history.com/#Surfire/FundVal-Live&type=date&legend=top-left)
