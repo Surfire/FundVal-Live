@@ -50,7 +50,7 @@ export const FundDetail = ({ fund, onSubscribe, accountId }) => {
         </div>
 
         {/* Chart Section with Tab Switcher */}
-        <div className="py-4 border-b border-slate-50 mb-4">
+        <div className="py-4 border-b border-slate-50 mb-4 min-w-0">
           <div className="flex gap-2 mb-4">
             <button
               onClick={() => setChartType('history')}

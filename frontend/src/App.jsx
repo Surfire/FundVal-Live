@@ -34,6 +34,7 @@ export default function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedFund, setSelectedFund] = useState(null);
   const [detailFundId, setDetailFundId] = useState(null);
+  const [detailReturnView, setDetailReturnView] = useState('list');
   const [accountCodes, setAccountCodes] = useState(new Set());
 
   // Load preferences from backend on mount
@@ -287,13 +288,14 @@ export default function App() {
       }
     }
 
+    setDetailReturnView(currentView === 'detail' ? detailReturnView : currentView);
     setDetailFundId(id);
     setCurrentView('detail');
     window.scrollTo(0, 0);
   };
 
   const handleBack = () => {
-    setCurrentView('list');
+    setCurrentView(detailReturnView || 'list');
     setDetailFundId(null);
   };
 

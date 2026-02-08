@@ -93,6 +93,7 @@ def init_db():
         ('OPENAI_API_KEY', '', 1),
         ('OPENAI_API_BASE', 'https://api.openai.com/v1', 0),
         ('AI_MODEL_NAME', 'gpt-3.5-turbo', 0),
+        ('OCR_MODEL_NAME', 'Qwen/Qwen3-VL-32B-Instruct', 0),
         ('SMTP_HOST', 'smtp.gmail.com', 0),
         ('SMTP_PORT', '587', 0),
         ('SMTP_USER', '', 0),

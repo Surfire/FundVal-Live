@@ -232,6 +232,13 @@ export const createStrategyVersion = async (portfolioId, data) => {
     return response.data;
 };
 
+export const updateStrategyScope = async (portfolioId, scopeCodes) => {
+    const response = await api.patch(`/strategy/portfolios/${portfolioId}/scope`, {
+        scope_codes: scopeCodes || []
+    });
+    return response.data;
+};
+
 export const getStrategyPerformance = async (portfolioId, accountId) => {
     const response = await api.get(`/strategy/portfolios/${portfolioId}/performance`, {
         params: { account_id: accountId }
@@ -246,16 +253,33 @@ export const getStrategyPositionsView = async (portfolioId, accountId) => {
     return response.data;
 };
 
+export const getStrategyScopeCandidates = async (portfolioId, accountId) => {
+    const response = await api.get(`/strategy/portfolios/${portfolioId}/scope-candidates`, {
+        params: { account_id: accountId }
+    });
+    return response.data.rows || [];
+};
+
+export const recognizeStrategyHoldingsFromImage = async (imageDataUrl) => {
+    const response = await api.post('/strategy/holdings-ocr', {
+        image_data_url: imageDataUrl
+    });
+    return response.data;
+};
+
 export const generateStrategyRebalance = async (portfolioId, data) => {
     const response = await api.post(`/strategy/portfolios/${portfolioId}/rebalance`, data);
     return response.data;
 };
 
-export const listRebalanceOrders = async (portfolioId, accountId, status = null) => {
+export const listRebalanceOrders = async (portfolioId, accountId, status = null, batchId = null) => {
     const params = { account_id: accountId };
     if (status) params.status = status;
+    if (batchId) params.batch_id = batchId;
     const response = await api.get(`/strategy/portfolios/${portfolioId}/rebalance-orders`, { params });
-    return response.data.orders || [];
+    const rows = response.data.orders || [];
+    if (batchId) return rows.filter((r) => Number(r.batch_id) === Number(batchId));
+    return rows;
 };
 
 export const updateRebalanceOrderStatus = async (orderId, status) => {
@@ -281,4 +305,9 @@ export const listRebalanceBatches = async (portfolioId, accountId) => {
         params: { account_id: accountId }
     });
     return response.data.batches || [];
+};
+
+export const completeRebalanceBatch = async (batchId) => {
+    const response = await api.post(`/strategy/rebalance-batches/${batchId}/complete`);
+    return response.data;
 };
