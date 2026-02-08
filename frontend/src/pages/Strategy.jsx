@@ -51,6 +51,12 @@ function toNumber(v, n = 2) {
   return Number(v).toFixed(n);
 }
 
+function getRateColor(value) {
+  if (value > 0) return 'text-red-500';
+  if (value < 0) return 'text-green-500';
+  return 'text-slate-500';
+}
+
 function mergeSeries(strategySeries = [], benchmarkSeries = []) {
   const safeStrategy = Array.isArray(strategySeries) ? strategySeries : [];
   const safeBenchmark = Array.isArray(benchmarkSeries) ? benchmarkSeries : [];
@@ -653,36 +659,69 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
               {loadingHoldings ? (
                 <div className="text-sm text-slate-500">持仓数据加载中...</div>
               ) : (
-                <div className="overflow-x-auto border rounded-lg">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-600">
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+                  <table className="w-full text-base text-left border-collapse">
+                    <thead className="bg-slate-50 text-slate-500 font-medium text-xs uppercase tracking-wider">
                       <tr>
-                        <th className="px-2 py-2 text-left">标的</th>
-                        <th className="px-2 py-2 text-right">份额</th>
-                        <th className="px-2 py-2 text-right">成本</th>
-                        <th className="px-2 py-2 text-right">现价</th>
-                        <th className="px-2 py-2 text-right">市值</th>
-                        <th className="px-2 py-2 text-right">当前权重</th>
-                        <th className="px-2 py-2 text-right">目标权重</th>
-                        <th className="px-2 py-2 text-right">偏离</th>
-                        <th className="px-2 py-2 text-right">调仓</th>
+                        <th className="px-4 py-3 text-left border-b border-slate-100 bg-slate-50 rounded-tl-xl">基金</th>
+                        <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">现价 | 成本</th>
+                        <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">份额 | 市值</th>
+                        <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">持有收益</th>
+                        <th className="px-4 py-3 text-right border-b border-slate-100 bg-slate-50">当前 vs 目标</th>
+                        <th className="px-4 py-3 text-center border-b border-slate-100 bg-slate-50 rounded-tr-xl">操作</th>
                       </tr>
                     </thead>
-                    <tbody>
-                      {holdingRows.map((r) => (
-                        <tr key={r.code} className="border-t">
-                          <td className="px-2 py-2">{r.name} <span className="text-slate-400">({r.code})</span></td>
-                          <td className="px-2 py-2 text-right">{toNumber(r.shares, 4)}</td>
-                          <td className="px-2 py-2 text-right">{toNumber(r.cost, 4)}</td>
-                          <td className="px-2 py-2 text-right">{toNumber(r.price, 4)}</td>
-                          <td className="px-2 py-2 text-right">{toNumber(r.market_value, 2)}</td>
-                          <td className="px-2 py-2 text-right">{toPercent(r.current_weight)}</td>
-                          <td className="px-2 py-2 text-right">{toPercent(r.target_weight)}</td>
-                          <td className="px-2 py-2 text-right">{toPercent(r.deviation)}</td>
-                          <td className="px-2 py-2 text-right">
-                            <div className="flex justify-end gap-2">
-                              <button onClick={() => openAddModal(r)} className="px-2 py-1 text-xs rounded border hover:bg-slate-50">加仓</button>
-                              <button onClick={() => openReduceModal(r)} className="px-2 py-1 text-xs rounded border hover:bg-slate-50">减仓</button>
+                    <tbody className="divide-y divide-slate-100 text-base">
+                      {holdingRows.length === 0 ? (
+                        <tr>
+                          <td colSpan="6" className="px-4 py-8 text-center text-slate-400">
+                            当前策略范围暂无持仓
+                          </td>
+                        </tr>
+                      ) : holdingRows.map((r) => (
+                        <tr key={r.code} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-3 max-w-[180px]">
+                            <div className="font-medium text-slate-800 truncate" title={r.name}>{r.name}</div>
+                            <div className="text-xs text-slate-400 font-mono">{r.code}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono">
+                            <div className="text-slate-700">{toNumber(r.price, 4)}</div>
+                            <div className="text-xs text-slate-400">{toNumber(r.cost, 4)}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-slate-600">
+                            <div>{toNumber(r.shares, 4)}</div>
+                            <div className="text-xs text-slate-400">{toNumber(r.market_value, 2)}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono">
+                            <div className={`font-medium ${getRateColor(r.profit)}`}>
+                              {r.profit > 0 ? '+' : ''}{toNumber(r.profit, 2)}
+                            </div>
+                            <div className={`text-xs ${getRateColor(r.profit_rate)}`}>
+                              {r.profit_rate > 0 ? '+' : ''}{toPercent(r.profit_rate)}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono">
+                            <div className="text-slate-700">{toPercent(r.current_weight)}</div>
+                            <div className={`text-xs ${getRateColor(-r.deviation)}`}>
+                              目标 {toPercent(r.target_weight)}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => openAddModal(r)}
+                                className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                                title="加仓"
+                              >
+                                +
+                              </button>
+                              <button
+                                onClick={() => openReduceModal(r)}
+                                className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors"
+                                title="减仓"
+                              >
+                                -
+                              </button>
                             </div>
                           </td>
                         </tr>

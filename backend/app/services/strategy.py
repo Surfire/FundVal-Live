@@ -659,6 +659,9 @@ def get_portfolio_positions_view(portfolio_id: int, account_id: int) -> Dict[str
         cost = float(pos.get("cost", 0.0))
         price = float(price_map.get(code, 0.0))
         market_value = shares * price
+        cost_basis = shares * cost
+        profit = market_value - cost_basis
+        profit_rate = (profit / cost_basis) if cost_basis > 0 else 0.0
         current_weight = market_value / total_value if total_value > 0 else 0.0
         target_weight = float(target_map.get(code, 0.0))
 
@@ -668,7 +671,10 @@ def get_portfolio_positions_view(portfolio_id: int, account_id: int) -> Dict[str
             "shares": round(shares, 4),
             "cost": round(cost, 4),
             "price": round(price, 4),
+            "cost_basis": round(cost_basis, 2),
             "market_value": round(market_value, 2),
+            "profit": round(profit, 2),
+            "profit_rate": round(profit_rate, 6),
             "current_weight": round(current_weight, 6),
             "target_weight": round(target_weight, 6),
             "deviation": round(current_weight - target_weight, 6),
