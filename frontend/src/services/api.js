@@ -214,8 +214,17 @@ export const getStrategyPortfolio = async (portfolioId) => {
 };
 
 export const deleteStrategyPortfolio = async (portfolioId) => {
-    const response = await api.delete(`/strategy/portfolios/${portfolioId}`);
-    return response.data;
+    try {
+        const response = await api.delete(`/strategy/portfolios/${portfolioId}`);
+        return response.data;
+    } catch (error) {
+        // Backward compatible fallback when backend method table is stale.
+        if (error?.response?.status === 405) {
+            const response = await api.post(`/strategy/portfolios/${portfolioId}/delete`);
+            return response.data;
+        }
+        throw error;
+    }
 };
 
 export const createStrategyVersion = async (portfolioId, data) => {

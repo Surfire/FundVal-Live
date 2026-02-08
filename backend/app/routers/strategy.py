@@ -102,6 +102,16 @@ def api_delete_portfolio(portfolio_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/strategy/portfolios/{portfolio_id}/delete")
+def api_delete_portfolio_post(portfolio_id: int):
+    try:
+        return delete_portfolio(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/strategy/portfolios/{portfolio_id}/versions")
 def api_create_version(portfolio_id: int, data: CreateVersionModel):
     try:

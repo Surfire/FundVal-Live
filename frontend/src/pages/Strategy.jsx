@@ -4,12 +4,12 @@ import {
   Legend,
   Line,
   LineChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 import {
+  addPositionTrade,
   createStrategyPortfolio,
   createStrategyVersion,
   deleteStrategyPortfolio,
@@ -20,6 +20,7 @@ import {
   getStrategyPositionsView,
   listRebalanceOrders,
   listStrategyPortfolios,
+  reducePositionTrade,
   searchFunds,
   updateRebalanceOrderStatus,
 } from '../services/api';
@@ -311,6 +312,11 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [addModal, setAddModal] = useState(null);
+  const [reduceModal, setReduceModal] = useState(null);
+  const [tradeAmount, setTradeAmount] = useState('');
+  const [tradeShares, setTradeShares] = useState('');
+  const [tradeSubmitting, setTradeSubmitting] = useState(false);
 
   const selectedPortfolio = useMemo(
     () => portfolios.find((p) => p.id === selectedId),
@@ -447,6 +453,50 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
     setOrders(o);
   };
 
+  const openAddModal = (row) => {
+    setAddModal(row);
+    setTradeAmount('');
+  };
+
+  const openReduceModal = (row) => {
+    setReduceModal(row);
+    setTradeShares('');
+  };
+
+  const submitAddTrade = async (e) => {
+    e.preventDefault();
+    if (!addModal || !tradeAmount || Number(tradeAmount) <= 0 || tradeSubmitting) return;
+    setTradeSubmitting(true);
+    try {
+      await addPositionTrade(addModal.code, { amount: Number(tradeAmount) }, currentAccount);
+      setAddModal(null);
+      await Promise.all([selectedId ? loadHoldings(selectedId) : Promise.resolve(), loadAccountPositions()]);
+    } catch (err) {
+      alert(err?.response?.data?.detail || '加仓失败');
+    } finally {
+      setTradeSubmitting(false);
+    }
+  };
+
+  const submitReduceTrade = async (e) => {
+    e.preventDefault();
+    if (!reduceModal || !tradeShares || Number(tradeShares) <= 0 || tradeSubmitting) return;
+    if (Number(tradeShares) > Number(reduceModal.shares || 0)) {
+      alert(`减仓份额不能大于当前份额 ${reduceModal.shares}`);
+      return;
+    }
+    setTradeSubmitting(true);
+    try {
+      await reducePositionTrade(reduceModal.code, { shares: Number(tradeShares) }, currentAccount);
+      setReduceModal(null);
+      await Promise.all([selectedId ? loadHoldings(selectedId) : Promise.resolve(), loadAccountPositions()]);
+    } catch (err) {
+      alert(err?.response?.data?.detail || '减仓失败');
+    } finally {
+      setTradeSubmitting(false);
+    }
+  };
+
   const handleOrderStatus = async (orderId, status) => {
     await updateRebalanceOrderStatus(orderId, status);
     if (!selectedId) return;
@@ -568,18 +618,16 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                       ))}
                     </div>
                     <div className="h-72">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
-                        <LineChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="date" minTickGap={28} />
-                          <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
-                          <Tooltip formatter={(v) => toPercent(v)} />
-                          <Legend />
-                          <Line type="monotone" dataKey="strategy" stroke="#2563eb" name="组合" dot={false} strokeWidth={2} />
-                          <Line type="monotone" dataKey="benchmark" stroke="#16a34a" name="基准" dot={false} strokeWidth={2} />
-                          <Line type="monotone" dataKey="excess" stroke="#dc2626" name="超额" dot={false} strokeWidth={2} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <LineChart width={900} height={280} data={chartData} style={{ maxWidth: '100%' }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="date" minTickGap={28} />
+                        <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                        <Tooltip formatter={(v) => toPercent(v)} />
+                        <Legend />
+                        <Line type="monotone" dataKey="strategy" stroke="#2563eb" name="组合" dot={false} strokeWidth={2} />
+                        <Line type="monotone" dataKey="benchmark" stroke="#16a34a" name="基准" dot={false} strokeWidth={2} />
+                        <Line type="monotone" dataKey="excess" stroke="#dc2626" name="超额" dot={false} strokeWidth={2} />
+                      </LineChart>
                     </div>
                   </div>
                 </>
@@ -609,6 +657,7 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                         <th className="px-2 py-2 text-right">当前权重</th>
                         <th className="px-2 py-2 text-right">目标权重</th>
                         <th className="px-2 py-2 text-right">偏离</th>
+                        <th className="px-2 py-2 text-right">调仓</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -622,6 +671,12 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                           <td className="px-2 py-2 text-right">{toPercent(r.current_weight)}</td>
                           <td className="px-2 py-2 text-right">{toPercent(r.target_weight)}</td>
                           <td className="px-2 py-2 text-right">{toPercent(r.deviation)}</td>
+                          <td className="px-2 py-2 text-right">
+                            <div className="flex justify-end gap-2">
+                              <button onClick={() => openAddModal(r)} className="px-2 py-1 text-xs rounded border hover:bg-slate-50">加仓</button>
+                              <button onClick={() => openReduceModal(r)} className="px-2 py-1 text-xs rounded border hover:bg-slate-50">减仓</button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -703,6 +758,48 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
             initialRows={(detail.active_holdings || []).map((h) => ({ code: h.code, name: '', weight: (h.weight * 100).toFixed(2) }))}
             initialScope={detail.portfolio?.scope_codes || []}
           />
+        </Modal>
+      )}
+
+      {addModal && (
+        <Modal title={`加仓 ${addModal.name || addModal.code}`} onClose={() => setAddModal(null)}>
+          <form onSubmit={submitAddTrade} className="space-y-3">
+            <div className="text-sm text-slate-600">输入加仓金额（元）</div>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={tradeAmount}
+              onChange={(e) => setTradeAmount(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2"
+              placeholder="例如 5000"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAddModal(null)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
+              <button type="submit" disabled={tradeSubmitting} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">确认加仓</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {reduceModal && (
+        <Modal title={`减仓 ${reduceModal.name || reduceModal.code}`} onClose={() => setReduceModal(null)}>
+          <form onSubmit={submitReduceTrade} className="space-y-3">
+            <div className="text-sm text-slate-600">输入减仓份额（当前可用：{toNumber(reduceModal.shares, 4)}）</div>
+            <input
+              type="number"
+              min="0"
+              step="0.0001"
+              value={tradeShares}
+              onChange={(e) => setTradeShares(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2"
+              placeholder="例如 1000"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setReduceModal(null)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
+              <button type="submit" disabled={tradeSubmitting} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">确认减仓</button>
+            </div>
+          </form>
         </Modal>
       )}
     </div>
