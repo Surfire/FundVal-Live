@@ -269,8 +269,25 @@ export default function App() {
     setModalOpen(true);
   };
 
-  const handleCardClick = (fundId) => {
-    setDetailFundId(fundId);
+  const handleCardClick = async (fundId) => {
+    let id = fundId;
+    if (typeof fundId === 'number') id = String(fundId);
+
+    const exists = watchlist.find((f) => f.id === id);
+    if (!exists) {
+      try {
+        const detail = await getFundDetail(id);
+        setWatchlist((prev) => {
+          if (prev.find((f) => f.id === id)) return prev;
+          return [...prev, { ...detail, id, trusted: true }];
+        });
+      } catch (e) {
+        alert('无法加载该基金详情');
+        return;
+      }
+    }
+
+    setDetailFundId(id);
     setCurrentView('detail');
     window.scrollTo(0, 0);
   };
@@ -496,6 +513,7 @@ export default function App() {
           <Strategy
             currentAccount={currentAccount === 0 ? 1 : currentAccount}
             isActive={currentView === 'strategy'}
+            onSelectFund={handleCardClick}
           />
         )}
 

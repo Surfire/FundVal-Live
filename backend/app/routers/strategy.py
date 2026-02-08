@@ -7,6 +7,7 @@ from ..services.strategy import (
     create_portfolio,
     create_strategy_version,
     delete_portfolio,
+    execute_rebalance_order,
     generate_rebalance_orders,
     get_performance,
     get_portfolio_detail,
@@ -52,6 +53,11 @@ class RebalanceModel(BaseModel):
 
 class OrderStatusModel(BaseModel):
     status: str = Field(..., pattern="^(suggested|executed|skipped)$")
+
+class ExecuteOrderModel(BaseModel):
+    executed_shares: float = Field(..., gt=0)
+    executed_price: float = Field(..., gt=0)
+    note: str = ""
 
 
 @router.get("/strategy/portfolios")
@@ -188,6 +194,21 @@ def api_list_rebalance_orders(
 def api_update_order_status(order_id: int, data: OrderStatusModel):
     try:
         return update_rebalance_order_status(order_id, data.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-orders/{order_id}/execute")
+def api_execute_order(order_id: int, data: ExecuteOrderModel):
+    try:
+        return execute_rebalance_order(
+            order_id=order_id,
+            executed_shares=data.executed_shares,
+            executed_price=data.executed_price,
+            note=data.note,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

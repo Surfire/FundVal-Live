@@ -10,6 +10,7 @@ import pandas as pd
 
 from ..db import get_db_connection
 from .fund import get_combined_valuation, get_fund_history
+from .account import upsert_position, remove_position
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,18 @@ def _get_price_and_name(code: str) -> Tuple[Optional[float], str, float]:
     price = estimate if estimate > 0 else nav
     if price > 0:
         return price, name, est_rate
+
+    # Try local fund metadata for name fallback.
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM funds WHERE code = ?", (code,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row["name"]:
+            name = row["name"]
+    except Exception:
+        pass
 
     history = get_fund_history(code, limit=1)
     if history:
@@ -538,7 +551,8 @@ def list_rebalance_orders(portfolio_id: int, account_id: int, status: Optional[s
             SELECT id, portfolio_id, version_id, account_id, fund_code, fund_name,
                    action, target_weight, current_weight, target_shares,
                    current_shares, delta_shares, price, trade_amount, fee,
-                   status, created_at, executed_at
+                   status, created_at, executed_at, executed_shares, executed_price,
+                   executed_amount, execution_note
             FROM rebalance_orders
             WHERE portfolio_id = ? AND account_id = ? AND status = ?
             ORDER BY id DESC
@@ -551,7 +565,8 @@ def list_rebalance_orders(portfolio_id: int, account_id: int, status: Optional[s
             SELECT id, portfolio_id, version_id, account_id, fund_code, fund_name,
                    action, target_weight, current_weight, target_shares,
                    current_shares, delta_shares, price, trade_amount, fee,
-                   status, created_at, executed_at
+                   status, created_at, executed_at, executed_shares, executed_price,
+                   executed_amount, execution_note
             FROM rebalance_orders
             WHERE portfolio_id = ? AND account_id = ?
             ORDER BY id DESC
@@ -589,6 +604,108 @@ def update_rebalance_order_status(order_id: int, status: str) -> Dict[str, Any]:
     conn.close()
     _invalidate_perf_cache(int(row["portfolio_id"]))
     return {"ok": True}
+
+
+def execute_rebalance_order(
+    order_id: int,
+    executed_shares: float,
+    executed_price: float,
+    note: str = "",
+) -> Dict[str, Any]:
+    if executed_shares <= 0:
+        raise ValueError("executed_shares must be > 0")
+    if executed_price <= 0:
+        raise ValueError("executed_price must be > 0")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, portfolio_id, account_id, fund_code, action, fee
+        FROM rebalance_orders
+        WHERE id = ?
+        """,
+        (order_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("order not found")
+
+    if row["action"] not in {"buy", "sell"}:
+        conn.close()
+        raise ValueError("only buy/sell orders can be executed")
+
+    account_id = int(row["account_id"])
+    code = row["fund_code"]
+    action = row["action"]
+    fee = float(row["fee"] or 0.0)
+
+    cursor.execute(
+        "SELECT shares, cost FROM positions WHERE account_id = ? AND code = ?",
+        (account_id, code),
+    )
+    pos = cursor.fetchone()
+    old_shares = float(pos["shares"]) if pos else 0.0
+    old_cost = float(pos["cost"]) if pos else 0.0
+
+    trade_amount = round(executed_shares * executed_price, 2)
+
+    try:
+        if action == "buy":
+            new_shares = round(old_shares + executed_shares, 4)
+            if new_shares <= 0:
+                raise ValueError("invalid resulting shares")
+            if old_shares > 0:
+                new_cost = round((old_cost * old_shares + executed_price * executed_shares) / new_shares, 4)
+            else:
+                new_cost = round(executed_price, 4)
+            upsert_position(account_id, code, new_cost, new_shares)
+        else:
+            if old_shares <= 0:
+                raise ValueError("position not found for sell execution")
+            if executed_shares > old_shares:
+                raise ValueError(f"executed_shares exceeds current shares ({old_shares})")
+            new_shares = round(old_shares - executed_shares, 4)
+            if new_shares <= 0:
+                remove_position(account_id, code)
+                new_cost = 0.0
+            else:
+                new_cost = old_cost
+                upsert_position(account_id, code, new_cost, new_shares)
+
+        cursor.execute(
+            """
+            UPDATE rebalance_orders
+            SET status = 'executed',
+                executed_at = CURRENT_TIMESTAMP,
+                executed_shares = ?,
+                executed_price = ?,
+                executed_amount = ?,
+                execution_note = ?
+            WHERE id = ?
+            """,
+            (executed_shares, executed_price, trade_amount, note, order_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    _invalidate_perf_cache(int(row["portfolio_id"]))
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "account_id": account_id,
+        "code": code,
+        "action": action,
+        "executed_shares": round(executed_shares, 4),
+        "executed_price": round(executed_price, 4),
+        "executed_amount": trade_amount,
+        "estimated_fee": fee,
+    }
 
 
 def delete_portfolio(portfolio_id: int) -> Dict[str, Any]:

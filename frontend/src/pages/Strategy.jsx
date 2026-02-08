@@ -13,6 +13,7 @@ import {
   createStrategyPortfolio,
   createStrategyVersion,
   deleteStrategyPortfolio,
+  executeRebalanceOrder,
   generateStrategyRebalance,
   getAccountPositions,
   getStrategyPerformance,
@@ -306,7 +307,7 @@ function StrategyBuilder({
   );
 }
 
-export default function Strategy({ currentAccount = 1, isActive = false }) {
+export default function Strategy({ currentAccount = 1, isActive = false, onSelectFund = null }) {
   const [portfolios, setPortfolios] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -331,6 +332,10 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
   const [tradeAmount, setTradeAmount] = useState('');
   const [tradeShares, setTradeShares] = useState('');
   const [tradeSubmitting, setTradeSubmitting] = useState(false);
+  const [execModal, setExecModal] = useState(null);
+  const [execShares, setExecShares] = useState('');
+  const [execPrice, setExecPrice] = useState('');
+  const [execNote, setExecNote] = useState('');
 
   const selectedPortfolio = useMemo(
     () => portfolios.find((p) => p.id === selectedId),
@@ -518,6 +523,45 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
     setOrders(o);
   };
 
+  const openExecuteModal = (order) => {
+    setExecModal(order);
+    setExecShares(String(Math.abs(Number(order.delta_shares || 0)) || ''));
+    setExecPrice(String(Number(order.price || 0) || ''));
+    setExecNote('');
+  };
+
+  const submitExecuteOrder = async (e) => {
+    e.preventDefault();
+    if (!execModal || tradeSubmitting) return;
+    const shares = Number(execShares);
+    const price = Number(execPrice);
+    if (!(shares > 0) || !(price > 0)) {
+      alert('请填写有效的成交份额和成交价格');
+      return;
+    }
+    setTradeSubmitting(true);
+    try {
+      await executeRebalanceOrder(execModal.id, {
+        executed_shares: shares,
+        executed_price: price,
+        note: execNote,
+      });
+      setExecModal(null);
+      if (selectedId) {
+        await Promise.all([
+          loadBase(selectedId),
+          loadHoldings(selectedId),
+          loadPerformance(selectedId),
+          loadAccountPositions(),
+        ]);
+      }
+    } catch (err) {
+      alert(err?.response?.data?.detail || '执行调仓失败');
+    } finally {
+      setTradeSubmitting(false);
+    }
+  };
+
   const mergedSeries = useMemo(() => {
     const strategy = performance?.series?.strategy || [];
     const benchmark = performance?.series?.benchmark || [];
@@ -680,8 +724,11 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                         </tr>
                       ) : holdingRows.map((r) => (
                         <tr key={r.code} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3 max-w-[180px]">
-                            <div className="font-medium text-slate-800 truncate" title={r.name}>{r.name}</div>
+                          <td
+                            className={`px-4 py-3 max-w-[180px] ${onSelectFund ? 'cursor-pointer group' : ''}`}
+                            onClick={() => onSelectFund && onSelectFund(r.code)}
+                          >
+                            <div className={`font-medium truncate ${onSelectFund ? 'text-slate-800 group-hover:text-blue-600' : 'text-slate-800'}`} title={r.name}>{r.name}</div>
                             <div className="text-xs text-slate-400 font-mono">{r.code}</div>
                           </td>
                           <td className="px-4 py-3 text-right font-mono">
@@ -743,7 +790,9 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                         <th className="px-2 py-2 text-right">调整份额</th>
                         <th className="px-2 py-2 text-right">交易金额</th>
                         <th className="px-2 py-2 text-right">手续费</th>
+                        <th className="px-2 py-2 text-right">执行信息</th>
                         <th className="px-2 py-2 text-right">状态</th>
+                        <th className="px-2 py-2 text-right">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -755,6 +804,16 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                           <td className="px-2 py-2 text-right">{toNumber(o.trade_amount, 2)}</td>
                           <td className="px-2 py-2 text-right">{toNumber(o.fee, 2)}</td>
                           <td className="px-2 py-2 text-right">
+                            {o.executed_shares ? (
+                              <div>
+                                <div>{toNumber(o.executed_shares, 4)} @ {toNumber(o.executed_price, 4)}</div>
+                                <div className="text-xs text-slate-400">{o.executed_at ? String(o.executed_at).slice(0, 16) : '--'}</div>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">--</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-right">
                             <select
                               value={o.status}
                               onChange={(e) => handleOrderStatus(o.id, e.target.value)}
@@ -764,6 +823,18 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                               <option value="executed">已执行</option>
                               <option value="skipped">跳过</option>
                             </select>
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            {o.status === 'suggested' && (o.action === 'buy' || o.action === 'sell') ? (
+                              <button
+                                onClick={() => openExecuteModal(o)}
+                                className="px-2 py-1 text-xs rounded border hover:bg-slate-50"
+                              >
+                                确认调仓
+                              </button>
+                            ) : (
+                              <span className="text-slate-400 text-xs">--</span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -845,6 +916,54 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setReduceModal(null)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
               <button type="submit" disabled={tradeSubmitting} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">确认减仓</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {execModal && (
+        <Modal title={`确认调仓 · ${execModal.fund_name || execModal.fund_code}`} onClose={() => setExecModal(null)}>
+          <form onSubmit={submitExecuteOrder} className="space-y-3">
+            <div className="text-sm text-slate-600">
+              操作方向：{execModal.action === 'buy' ? '买入' : '卖出'}，建议份额：{toNumber(Math.abs(execModal.delta_shares || 0), 4)}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">实际成交份额</label>
+              <input
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                value={execShares}
+                onChange={(e) => setExecShares(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">实际成交价格</label>
+              <input
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                value={execPrice}
+                onChange={(e) => setExecPrice(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">备注（可选）</label>
+              <input
+                type="text"
+                value={execNote}
+                onChange={(e) => setExecNote(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="如：分两笔成交"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setExecModal(null)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
+              <button type="submit" disabled={tradeSubmitting} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">确认并同步持仓</button>
             </div>
           </form>
         </Modal>

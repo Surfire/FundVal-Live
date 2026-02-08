@@ -484,6 +484,23 @@ def init_db():
             cursor.execute("UPDATE strategy_portfolios SET scope_codes = '[]' WHERE scope_codes IS NULL")
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6)")
 
+    # Migration: rebalance execution detail columns
+    if current_version < 7:
+        logger.info("Running migration: adding execution columns to rebalance_orders")
+        cursor.execute("PRAGMA table_info(rebalance_orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "executed_price" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_price REAL")
+        if "executed_shares" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_shares REAL")
+        if "executed_amount" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN executed_amount REAL")
+        if "execution_note" not in columns:
+            cursor.execute("ALTER TABLE rebalance_orders ADD COLUMN execution_note TEXT")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7)")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized.")

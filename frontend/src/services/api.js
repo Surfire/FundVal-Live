@@ -262,3 +262,8 @@ export const updateRebalanceOrderStatus = async (orderId, status) => {
     const response = await api.post(`/strategy/rebalance-orders/${orderId}/status`, { status });
     return response.data;
 };
+
+export const executeRebalanceOrder = async (orderId, data) => {
+    const response = await api.post(`/strategy/rebalance-orders/${orderId}/execute`, data);
+    return response.data;
+};
