@@ -51,11 +51,15 @@ function toNumber(v, n = 2) {
 }
 
 function mergeSeries(strategySeries = [], benchmarkSeries = []) {
+  const safeStrategy = Array.isArray(strategySeries) ? strategySeries : [];
+  const safeBenchmark = Array.isArray(benchmarkSeries) ? benchmarkSeries : [];
+  const strategyStartDate = safeStrategy.length ? safeStrategy[0].date : null;
+
   const m = new Map();
-  strategySeries.forEach((p) => {
+  safeStrategy.forEach((p) => {
     m.set(p.date, { date: p.date, strategy: p.return, benchmark: null });
   });
-  benchmarkSeries.forEach((p) => {
+  safeBenchmark.forEach((p) => {
     if (!m.has(p.date)) {
       m.set(p.date, { date: p.date, strategy: null, benchmark: p.return });
     } else {
@@ -65,6 +69,7 @@ function mergeSeries(strategySeries = [], benchmarkSeries = []) {
 
   return Array.from(m.values())
     .sort((a, b) => a.date.localeCompare(b.date))
+    .filter((d) => !strategyStartDate || d.date >= strategyStartDate)
     .map((d) => ({
       ...d,
       excess: d.strategy === null || d.benchmark === null ? null : d.strategy - d.benchmark,
@@ -316,6 +321,7 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
     const data = await listStrategyPortfolios(currentAccount);
     setPortfolios(data);
     setSelectedId((prev) => {
+      if (!data.length) return null;
       if (!prev && data.length) return data[0].id;
       if (prev && !data.some((x) => x.id === prev) && data.length) return data[0].id;
       return prev;
@@ -334,19 +340,22 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
       listRebalanceOrders(portfolioId, currentAccount),
     ]);
     setDetail(d);
-    setOrders(o);
+    setOrders(Array.isArray(o) ? o : []);
   }, [currentAccount]);
 
   const loadPerformance = useCallback(async (portfolioId) => {
     if (!portfolioId) return;
     const data = await getStrategyPerformance(portfolioId, currentAccount);
-    setPerformance(data);
+    setPerformance(data || null);
   }, [currentAccount]);
 
   const loadHoldings = useCallback(async (portfolioId) => {
     if (!portfolioId) return;
     const data = await getStrategyPositionsView(portfolioId, currentAccount);
-    setPositionsView(data);
+    setPositionsView({
+      rows: Array.isArray(data?.rows) ? data.rows : [],
+      summary: data?.summary || {},
+    });
   }, [currentAccount]);
 
   useEffect(() => {
@@ -357,13 +366,19 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
   useEffect(() => {
     if (!selectedId) return;
     setLoadingBase(true);
-    loadBase(selectedId).finally(() => setLoadingBase(false));
+    loadBase(selectedId)
+      .catch(() => setOrders([]))
+      .finally(() => setLoadingBase(false));
 
     setLoadingPerf(true);
-    loadPerformance(selectedId).finally(() => setLoadingPerf(false));
+    loadPerformance(selectedId)
+      .catch(() => setPerformance(null))
+      .finally(() => setLoadingPerf(false));
 
     setLoadingHoldings(true);
-    loadHoldings(selectedId).finally(() => setLoadingHoldings(false));
+    loadHoldings(selectedId)
+      .catch(() => setPositionsView({ rows: [], summary: {} }))
+      .finally(() => setLoadingHoldings(false));
   }, [selectedId, loadBase, loadPerformance, loadHoldings]);
 
   useEffect(() => {
@@ -409,13 +424,16 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
   const handleDeleteStrategy = async () => {
     if (!selectedId) return;
     if (!confirm('删除后该策略的版本和调仓记录会一并删除，确认继续？')) return;
-
-    await deleteStrategyPortfolio(selectedId);
-    setDetail(null);
-    setPerformance(null);
-    setPositionsView({ rows: [], summary: {} });
-    setOrders([]);
-    await loadPortfolios();
+    try {
+      await deleteStrategyPortfolio(selectedId);
+      setDetail(null);
+      setPerformance(null);
+      setPositionsView({ rows: [], summary: {} });
+      setOrders([]);
+      await loadPortfolios();
+    } catch (e) {
+      alert(e?.response?.data?.detail || '删除策略失败');
+    }
   };
 
   const handleGenerateRebalance = async () => {
@@ -443,6 +461,9 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
   }, [performance]);
 
   const chartData = useMemo(() => filterRange(mergedSeries, range), [mergedSeries, range]);
+
+  const holdingRows = Array.isArray(positionsView?.rows) ? positionsView.rows : [];
+  const orderRows = Array.isArray(orders) ? orders : [];
 
   return (
     <div className="space-y-6">
@@ -547,7 +568,7 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                       ))}
                     </div>
                     <div className="h-72">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
                         <LineChart data={chartData}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="date" minTickGap={28} />
@@ -591,7 +612,7 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {positionsView.rows.map((r) => (
+                      {holdingRows.map((r) => (
                         <tr key={r.code} className="border-t">
                           <td className="px-2 py-2">{r.name} <span className="text-slate-400">({r.code})</span></td>
                           <td className="px-2 py-2 text-right">{toNumber(r.shares, 4)}</td>
@@ -624,7 +645,7 @@ export default function Strategy({ currentAccount = 1, isActive = false }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {orders.slice(0, 80).map((o) => (
+                      {orderRows.slice(0, 80).map((o) => (
                         <tr key={o.id} className="border-t">
                           <td className="px-2 py-2">{o.fund_name || o.fund_code} <span className="text-slate-400">({o.fund_code})</span></td>
                           <td className="px-2 py-2 text-right">{o.action === 'buy' ? '买入' : o.action === 'sell' ? '卖出' : '保持'}</td>
