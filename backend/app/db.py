@@ -531,6 +531,32 @@ def init_db():
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
 
+    # Migration: strategy backtest cache
+    if current_version < 9:
+        logger.info("Running migration: adding strategy backtest cache")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_backtest_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                version_id INTEGER,
+                query_hash TEXT NOT NULL,
+                data_tag TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (portfolio_id) REFERENCES strategy_portfolios(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_backtest_cache_unique ON strategy_backtest_cache(portfolio_id, account_id, version_id, query_hash, data_tag)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_cache_lookup ON strategy_backtest_cache(portfolio_id, account_id, version_id, created_at DESC)"
+        )
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (9)")
+
     conn.commit()
     conn.close()
     logger.info("Database initialized.")

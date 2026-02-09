@@ -18,6 +18,7 @@ from ..services.strategy import (
     list_rebalance_batches,
     list_rebalance_orders,
     recognize_holdings_from_image,
+    run_backtest,
     update_portfolio_scope,
     update_rebalance_order_status,
 )
@@ -76,6 +77,18 @@ class ExecuteOrderModel(BaseModel):
 
 class OCRImageModel(BaseModel):
     image_data_url: str = Field(..., min_length=20)
+
+
+class BacktestModel(BaseModel):
+    account_id: int = Field(..., ge=1)
+    start_date: str = Field(..., min_length=8)
+    end_date: str = Field(..., min_length=8)
+    initial_capital: float = Field(..., gt=0)
+    rebalance_mode: str = Field("threshold", pattern="^(none|threshold|periodic|hybrid)$")
+    threshold: float = Field(0.005, ge=0, le=0.2)
+    periodic_days: int = Field(20, ge=1, le=365)
+    fee_rate: Optional[float] = Field(None, ge=0, le=0.02)
+    cache_only: bool = False
 
 
 @router.get("/strategy/portfolios")
@@ -200,6 +213,27 @@ def api_get_scope_candidates(portfolio_id: int, account_id: int = Query(..., ge=
 def api_recognize_holdings(data: OCRImageModel):
     try:
         return recognize_holdings_from_image(data.image_data_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/portfolios/{portfolio_id}/backtest")
+def api_run_backtest(portfolio_id: int, data: BacktestModel):
+    try:
+        return run_backtest(
+            portfolio_id=portfolio_id,
+            account_id=data.account_id,
+            start_date=data.start_date,
+            end_date=data.end_date,
+            initial_capital=data.initial_capital,
+            rebalance_mode=data.rebalance_mode,
+            threshold=data.threshold,
+            periodic_days=data.periodic_days,
+            fee_rate=data.fee_rate,
+            cache_only=data.cache_only,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -32,6 +32,7 @@ import {
   updateStrategyScope,
   updateRebalanceOrderStatus,
 } from '../services/api';
+import StrategyBacktest from './StrategyBacktest';
 
 const RANGE_OPTIONS = [
   { key: 'since', label: '成立以来' },
@@ -447,6 +448,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
 
   const [tab, setTab] = useState('performance');
   const [range, setRange] = useState('since');
+  const [backtestPageOpen, setBacktestPageOpen] = useState(false);
 
   const [performance, setPerformance] = useState(null);
   const [positionsView, setPositionsView] = useState({ rows: [], summary: {} });
@@ -549,6 +551,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
 
   useEffect(() => {
     if (!selectedId) return;
+    setBacktestPageOpen(false);
     setLoadingBase(true);
     loadBase(selectedId)
       .catch(() => setBatches([]))
@@ -868,6 +871,9 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
             </div>
             {(tab === 'performance' || tab === 'holdings') && (
               <div className="flex items-center gap-2">
+                {tab === 'performance' && (
+                  <button onClick={() => setBacktestPageOpen(true)} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700">回测</button>
+                )}
                 {tab === 'holdings' && (
                   <button onClick={() => setSmartOpen(true)} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700">智能调仓</button>
                 )}
@@ -878,6 +884,15 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
 
           {tab === 'performance' && (
             <>
+              {backtestPageOpen ? (
+                <StrategyBacktest
+                  portfolio={selectedPortfolio}
+                  currentAccount={currentAccount}
+                  defaultPrincipal={performance?.capital?.principal}
+                  onBack={() => setBacktestPageOpen(false)}
+                />
+              ) : (
+              <>
               {loadingPerf ? (
                 <div className="text-sm text-slate-500">业绩数据加载中...</div>
               ) : (
@@ -939,6 +954,8 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                     </div>
                   </div>
                 </>
+              )}
+              </>
               )}
             </>
           )}

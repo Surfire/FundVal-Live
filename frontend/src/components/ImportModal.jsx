@@ -17,7 +17,8 @@ export const ImportModal = ({ isOpen, onClose, onImport }) => {
     { key: 'transactions', label: '交易记录' },
     { key: 'ai_prompts', label: 'AI 提示词' },
     { key: 'subscriptions', label: '订阅设置' },
-    { key: 'settings', label: '系统设置' }
+    { key: 'settings', label: '系统设置' },
+    { key: 'strategy', label: '策略组合' }
   ];
 
   const handleFileChange = (e) => {

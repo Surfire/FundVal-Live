@@ -53,7 +53,7 @@ def _get_setting(key: str, default: str = "") -> str:
 
 class Config:
     # Database
-    DB_PATH = os.path.join(BASE_DIR, "data", "fund.db")
+    DB_PATH = os.getenv("FUNDVAL_DB_PATH", os.path.join(BASE_DIR, "data", "fund.db"))
     DB_URL = f"sqlite:///{DB_PATH}"
 
     # Data Sources

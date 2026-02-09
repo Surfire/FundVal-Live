@@ -12,9 +12,24 @@ class PromptModel(BaseModel):
     user_prompt: str = Field(..., min_length=1, max_length=10000)
     is_default: bool = False
 
+
+class BacktestAnalyzeModel(BaseModel):
+    backtest_result: Dict[str, Any]
+    style: str = "hardcore_audit"
+
 @router.post("/ai/analyze_fund")
 async def analyze_fund(fund_info: Dict[str, Any] = Body(...), prompt_id: int = Body(None)):
     return await ai_service.analyze_fund(fund_info, prompt_id=prompt_id)
+
+
+@router.get("/ai/backtest-prompts")
+def get_backtest_prompts():
+    return {"prompts": ai_service.get_backtest_prompt_presets()}
+
+
+@router.post("/ai/analyze_backtest")
+async def analyze_backtest(data: BacktestAnalyzeModel):
+    return await ai_service.analyze_backtest(data.backtest_result, style=data.style)
 
 @router.get("/ai/prompts")
 def get_prompts():
@@ -111,4 +126,3 @@ def delete_prompt(prompt_id: int):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
-

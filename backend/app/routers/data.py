@@ -11,7 +11,7 @@ from ..services.data_io import export_data, import_data
 router = APIRouter()
 
 # Valid module names
-VALID_MODULES = ["accounts", "positions", "transactions", "ai_prompts", "subscriptions", "settings"]
+VALID_MODULES = ["accounts", "positions", "transactions", "ai_prompts", "subscriptions", "settings", "strategy"]
 
 
 class ImportRequest(BaseModel):

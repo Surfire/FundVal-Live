@@ -8,7 +8,8 @@ export const ExportModal = ({ isOpen, onClose, onExport }) => {
     'transactions',
     'ai_prompts',
     'subscriptions',
-    'settings'
+    'settings',
+    'strategy'
   ]);
   const [exporting, setExporting] = useState(false);
 
@@ -18,7 +19,8 @@ export const ExportModal = ({ isOpen, onClose, onExport }) => {
     { key: 'transactions', label: '交易记录', description: '加仓减仓历史记录' },
     { key: 'ai_prompts', label: 'AI 提示词', description: '自定义提示词模板' },
     { key: 'subscriptions', label: '订阅设置', description: '邮件订阅配置' },
-    { key: 'settings', label: '系统设置', description: '配置项（敏感信息已脱敏）' }
+    { key: 'settings', label: '系统设置', description: '配置项（敏感信息已脱敏）' },
+    { key: 'strategy', label: '策略组合', description: '策略、版本、调仓批次、回测缓存' }
   ];
 
   const toggleModule = (moduleKey) => {

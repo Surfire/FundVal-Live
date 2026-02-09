@@ -25,6 +25,47 @@ class AIService:
         "持仓集中度: {concentration}\n持仓摘要: {holdings}\n历史摘要: {history_summary}\n"
         "输出 JSON，字段: summary, risk_level, analysis_report, suggestions"
     )
+    _BACKTEST_PRESET_PROMPTS = {
+        "hardcore_audit": {
+            "name": "硬核审计风格",
+            "system": (
+                "你是量化策略审计员。"
+                "只看数据，不讲故事。"
+                "输出必须简洁、直接、可执行。"
+                "禁止空话与泛泛而谈。"
+            ),
+            "user": (
+                "请基于以下回测结果做策略审计。\n"
+                "{backtest_summary}\n"
+                "请输出 JSON，字段必须包含：\n"
+                "summary: 一句话结论\n"
+                "risk_level: 低/中/高/极高\n"
+                "analysis_report: 200-300字，聚焦收益质量、回撤、稳定性、再平衡效率\n"
+                "strengths: 数组，列出2-4条优势\n"
+                "risks: 数组，列出2-4条风险\n"
+                "actions: 数组，列出2-4条可执行优化动作\n"
+            ),
+        },
+        "steady_advisor": {
+            "name": "稳健顾问风格",
+            "system": (
+                "你是长期资产配置顾问。"
+                "语气稳健、务实。"
+                "基于风险收益平衡给建议，不做情绪化判断。"
+            ),
+            "user": (
+                "请阅读以下策略回测摘要，并给出面向普通投资者的解释与建议。\n"
+                "{backtest_summary}\n"
+                "请输出 JSON，字段必须包含：\n"
+                "summary: 一句话总结\n"
+                "risk_level: 低/中/高/极高\n"
+                "analysis_report: 200-300字，说明策略特点与适配人群\n"
+                "strengths: 数组，列出2-4条亮点\n"
+                "risks: 数组，列出2-4条注意事项\n"
+                "actions: 数组，列出2-4条执行建议\n"
+            ),
+        },
+    }
 
     def __init__(self):
         # 不在初始化时创建 LLM，而是每次调用时动态创建
@@ -92,6 +133,52 @@ class AIService:
             raise ValueError(f"LLM 接口失败: HTTP {resp.status_code} {resp.text[:200]}")
         body = resp.json()
         return str(body["choices"][0]["message"]["content"] or "")
+
+    def get_backtest_prompt_presets(self) -> List[Dict[str, Any]]:
+        presets = []
+        for key, item in self._BACKTEST_PRESET_PROMPTS.items():
+            presets.append({"key": key, "name": item.get("name", key)})
+        return presets
+
+    def _build_backtest_summary(self, backtest_result: Dict[str, Any]) -> str:
+        params = backtest_result.get("params") or {}
+        capital = backtest_result.get("capital") or {}
+        metrics = (backtest_result.get("metrics") or {}).get("strategy") or {}
+        periods = (backtest_result.get("period_returns") or {}).get("strategy") or {}
+        rebalance = backtest_result.get("rebalance_summary") or {}
+        trades = backtest_result.get("trades") or []
+
+        first_trade = trades[0] if trades else None
+        last_trade = trades[-1] if trades else None
+
+        return (
+            "【回测参数】\n"
+            f"- 区间: {params.get('start_date')} ~ {params.get('end_date')}\n"
+            f"- 初始本金: {capital.get('principal')}\n"
+            f"- 再平衡模式: {params.get('rebalance_mode')}\n"
+            f"- 偏离阈值: {params.get('threshold')}\n"
+            f"- 固定周期: {params.get('periodic_days')} 交易日\n"
+            f"- 费率: {params.get('fee_rate')}\n"
+            "【收益结果】\n"
+            f"- 期末市值: {capital.get('market_value')}\n"
+            f"- 总收益: {capital.get('profit')} ({capital.get('profit_rate')})\n"
+            f"- 本周/本月/本季/YTD: {periods.get('week')} / {periods.get('month')} / {periods.get('quarter')} / {periods.get('ytd')}\n"
+            "【风险收益指标】\n"
+            f"- 年化收益: {metrics.get('annual_return')}\n"
+            f"- 年化波动: {metrics.get('annual_volatility')}\n"
+            f"- Sharpe: {metrics.get('sharpe')}\n"
+            f"- Alpha/Beta: {metrics.get('alpha')} / {metrics.get('beta')}\n"
+            f"- Calmar: {metrics.get('calmar')}\n"
+            f"- 信息比率: {metrics.get('information_ratio')}\n"
+            f"- 最大回撤: {metrics.get('max_drawdown')}\n"
+            "【调仓行为】\n"
+            f"- 调仓次数: {rebalance.get('rebalance_count')}\n"
+            f"- 成交笔数: {rebalance.get('trade_count')}\n"
+            f"- 换手金额: {rebalance.get('turnover')}\n"
+            f"- 手续费: {rebalance.get('fee_total')}\n"
+            f"- 首笔交易: {first_trade}\n"
+            f"- 末笔交易: {last_trade}\n"
+        )
 
     def search_news(self, query: str) -> str:
         try:
@@ -257,6 +344,55 @@ class AIService:
                 "analysis_report": f"LLM 调用或解析失败: {str(e)}",
                 "indicators": indicators,
                 "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+            }
+
+    async def analyze_backtest(self, backtest_result: Dict[str, Any], style: str = "hardcore_audit") -> Dict[str, Any]:
+        if not Config.OPENAI_API_KEY:
+            return {
+                "summary": "未配置 LLM API Key，无法进行分析。",
+                "risk_level": "未知",
+                "analysis_report": "请在设置页面配置 OpenAI API Key 以启用 AI 分析功能。",
+                "strengths": [],
+                "risks": [],
+                "actions": [],
+                "style": style,
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            }
+
+        preset = self._BACKTEST_PRESET_PROMPTS.get(style) or self._BACKTEST_PRESET_PROMPTS["hardcore_audit"]
+        summary = self._build_backtest_summary(backtest_result or {})
+        system_prompt = preset["system"]
+        user_prompt = preset["user"].format(backtest_summary=summary)
+
+        try:
+            raw_result = self._call_chat_completions(system_prompt, user_prompt, timeout_sec=90)
+            clean_json = raw_result.strip()
+            if "```json" in clean_json:
+                clean_json = clean_json.split("```json")[1].split("```")[0]
+            elif "```" in clean_json:
+                clean_json = clean_json.split("```")[1].split("```")[0]
+            result = json.loads(clean_json)
+            result.setdefault("summary", "分析完成")
+            result.setdefault("risk_level", "中")
+            result.setdefault("analysis_report", "")
+            result.setdefault("strengths", [])
+            result.setdefault("risks", [])
+            result.setdefault("actions", [])
+            result["style"] = style
+            result["style_name"] = preset.get("name", style)
+            result["timestamp"] = datetime.datetime.now().strftime("%H:%M:%S")
+            return result
+        except Exception as e:
+            return {
+                "summary": "回测分析生成失败",
+                "risk_level": "未知",
+                "analysis_report": f"LLM 调用或解析失败: {str(e)}",
+                "strengths": [],
+                "risks": [],
+                "actions": [],
+                "style": style,
+                "style_name": preset.get("name", style),
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
             }
 
 ai_service = AIService()

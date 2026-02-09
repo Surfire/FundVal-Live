@@ -6,7 +6,7 @@ from ..db import get_db_connection
 logger = logging.getLogger(__name__)
 
 # Import order based on dependencies
-IMPORT_ORDER = ["settings", "ai_prompts", "accounts", "positions", "transactions", "subscriptions"]
+IMPORT_ORDER = ["settings", "ai_prompts", "accounts", "positions", "transactions", "subscriptions", "strategy"]
 
 # Sensitive fields that should be masked on export
 SENSITIVE_MASK = "***"
@@ -52,6 +52,9 @@ def export_data(modules: List[str]) -> Dict[str, Any]:
         elif module == "subscriptions":
             result["modules"]["subscriptions"] = _export_subscriptions()
             result["metadata"]["total_subscriptions"] = len(result["modules"]["subscriptions"])
+        elif module == "strategy":
+            result["modules"]["strategy"] = _export_strategy()
+            result["metadata"]["total_strategy_portfolios"] = len(result["modules"]["strategy"].get("portfolios", []))
 
     return result
 
@@ -113,6 +116,8 @@ def import_data(data: Dict[str, Any], modules: List[str], mode: str) -> Dict[str
                 module_result = _import_transactions(conn, module_data, mode)
             elif module == "subscriptions":
                 module_result = _import_subscriptions(conn, module_data, mode)
+            elif module == "strategy":
+                module_result = _import_strategy(conn, module_data, mode)
             else:
                 continue
 
@@ -308,6 +313,81 @@ def _export_subscriptions() -> List[Dict[str, Any]]:
             })
 
         return subscriptions
+    finally:
+        conn.close()
+
+
+def _export_strategy() -> Dict[str, Any]:
+    """Export strategy-related data."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id, name, account_id, benchmark, fee_rate, scope_codes, created_at, updated_at
+            FROM strategy_portfolios
+            ORDER BY id
+            """
+        )
+        portfolios = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT id, portfolio_id, version_no, effective_date, note, is_active, created_at
+            FROM strategy_versions
+            ORDER BY id
+            """
+        )
+        versions = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT id, version_id, fund_code, target_weight, created_at
+            FROM strategy_holdings
+            ORDER BY id
+            """
+        )
+        holdings = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT id, portfolio_id, account_id, version_id, source, status, title, note, created_at, completed_at
+            FROM rebalance_batches
+            ORDER BY id
+            """
+        )
+        batches = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT id, portfolio_id, version_id, account_id, fund_code, fund_name, action,
+                   target_weight, current_weight, target_shares, current_shares, delta_shares,
+                   price, trade_amount, fee, status, created_at, executed_at, executed_price,
+                   executed_shares, executed_amount, execution_note, batch_id
+            FROM rebalance_orders
+            ORDER BY id
+            """
+        )
+        orders = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT id, portfolio_id, account_id, version_id, query_hash, data_tag, result_json, created_at
+            FROM strategy_backtest_cache
+            ORDER BY id
+            """
+        )
+        backtest_cache = [dict(row) for row in cursor.fetchall()]
+
+        return {
+            "portfolios": portfolios,
+            "versions": versions,
+            "holdings": holdings,
+            "rebalance_batches": batches,
+            "rebalance_orders": orders,
+            "backtest_cache": backtest_cache,
+        }
     finally:
         conn.close()
 
@@ -585,3 +665,254 @@ def _import_subscriptions(conn, data: List[Dict[str, Any]], mode: str) -> Dict[s
 
     return result
 
+
+def _import_strategy(conn, data: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """Import strategy-related data."""
+    cursor = conn.cursor()
+    portfolios = data.get("portfolios") or []
+    versions = data.get("versions") or []
+    holdings = data.get("holdings") or []
+    batches = data.get("rebalance_batches") or []
+    orders = data.get("rebalance_orders") or []
+    backtest_cache = data.get("backtest_cache") or []
+
+    total = len(portfolios) + len(versions) + len(holdings) + len(batches) + len(orders) + len(backtest_cache)
+    result = {"total": total, "imported": 0, "skipped": 0, "failed": 0, "deleted": 0, "errors": []}
+
+    if mode == "replace":
+        for table in [
+            "strategy_backtest_cache",
+            "rebalance_orders",
+            "rebalance_batches",
+            "strategy_holdings",
+            "strategy_versions",
+            "strategy_portfolios",
+        ]:
+            cursor.execute(f"DELETE FROM {table}")
+            result["deleted"] += int(cursor.rowcount or 0)
+
+    def _upsert_portfolio(p: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO strategy_portfolios (id, name, account_id, benchmark, fee_rate, scope_codes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+            ON CONFLICT(id) DO UPDATE SET
+              name=excluded.name,
+              account_id=excluded.account_id,
+              benchmark=excluded.benchmark,
+              fee_rate=excluded.fee_rate,
+              scope_codes=excluded.scope_codes,
+              updated_at=excluded.updated_at
+            """,
+            (
+                p.get("id"),
+                p.get("name", ""),
+                p.get("account_id"),
+                p.get("benchmark", "000300"),
+                p.get("fee_rate", 0.001),
+                p.get("scope_codes", "[]"),
+                p.get("created_at"),
+                p.get("updated_at"),
+            ),
+        )
+
+    def _upsert_version(v: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO strategy_versions (id, portfolio_id, version_no, effective_date, note, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            ON CONFLICT(id) DO UPDATE SET
+              portfolio_id=excluded.portfolio_id,
+              version_no=excluded.version_no,
+              effective_date=excluded.effective_date,
+              note=excluded.note,
+              is_active=excluded.is_active
+            """,
+            (
+                v.get("id"),
+                v.get("portfolio_id"),
+                v.get("version_no"),
+                v.get("effective_date"),
+                v.get("note"),
+                v.get("is_active", 1),
+                v.get("created_at"),
+            ),
+        )
+
+    def _upsert_holding(h: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO strategy_holdings (id, version_id, fund_code, target_weight, created_at)
+            VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            ON CONFLICT(id) DO UPDATE SET
+              version_id=excluded.version_id,
+              fund_code=excluded.fund_code,
+              target_weight=excluded.target_weight
+            """,
+            (
+                h.get("id"),
+                h.get("version_id"),
+                h.get("fund_code"),
+                h.get("target_weight"),
+                h.get("created_at"),
+            ),
+        )
+
+    def _upsert_batch(b: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO rebalance_batches (id, portfolio_id, account_id, version_id, source, status, title, note, created_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+            ON CONFLICT(id) DO UPDATE SET
+              portfolio_id=excluded.portfolio_id,
+              account_id=excluded.account_id,
+              version_id=excluded.version_id,
+              source=excluded.source,
+              status=excluded.status,
+              title=excluded.title,
+              note=excluded.note,
+              completed_at=excluded.completed_at
+            """,
+            (
+                b.get("id"),
+                b.get("portfolio_id"),
+                b.get("account_id"),
+                b.get("version_id"),
+                b.get("source", "auto"),
+                b.get("status", "pending"),
+                b.get("title"),
+                b.get("note"),
+                b.get("created_at"),
+                b.get("completed_at"),
+            ),
+        )
+
+    def _upsert_order(o: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO rebalance_orders (
+              id, portfolio_id, version_id, account_id, fund_code, fund_name, action,
+              target_weight, current_weight, target_shares, current_shares, delta_shares,
+              price, trade_amount, fee, status, created_at, executed_at, executed_price,
+              executed_shares, executed_amount, execution_note, batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              portfolio_id=excluded.portfolio_id,
+              version_id=excluded.version_id,
+              account_id=excluded.account_id,
+              fund_code=excluded.fund_code,
+              fund_name=excluded.fund_name,
+              action=excluded.action,
+              target_weight=excluded.target_weight,
+              current_weight=excluded.current_weight,
+              target_shares=excluded.target_shares,
+              current_shares=excluded.current_shares,
+              delta_shares=excluded.delta_shares,
+              price=excluded.price,
+              trade_amount=excluded.trade_amount,
+              fee=excluded.fee,
+              status=excluded.status,
+              executed_at=excluded.executed_at,
+              executed_price=excluded.executed_price,
+              executed_shares=excluded.executed_shares,
+              executed_amount=excluded.executed_amount,
+              execution_note=excluded.execution_note,
+              batch_id=excluded.batch_id
+            """,
+            (
+                o.get("id"),
+                o.get("portfolio_id"),
+                o.get("version_id"),
+                o.get("account_id"),
+                o.get("fund_code"),
+                o.get("fund_name"),
+                o.get("action"),
+                o.get("target_weight"),
+                o.get("current_weight"),
+                o.get("target_shares"),
+                o.get("current_shares"),
+                o.get("delta_shares"),
+                o.get("price"),
+                o.get("trade_amount"),
+                o.get("fee"),
+                o.get("status", "suggested"),
+                o.get("created_at"),
+                o.get("executed_at"),
+                o.get("executed_price"),
+                o.get("executed_shares"),
+                o.get("executed_amount"),
+                o.get("execution_note"),
+                o.get("batch_id"),
+            ),
+        )
+
+    def _upsert_backtest_cache(c: Dict[str, Any]):
+        cursor.execute(
+            """
+            INSERT INTO strategy_backtest_cache (
+              id, portfolio_id, account_id, version_id, query_hash, data_tag, result_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            ON CONFLICT(id) DO UPDATE SET
+              portfolio_id=excluded.portfolio_id,
+              account_id=excluded.account_id,
+              version_id=excluded.version_id,
+              query_hash=excluded.query_hash,
+              data_tag=excluded.data_tag,
+              result_json=excluded.result_json
+            """,
+            (
+                c.get("id"),
+                c.get("portfolio_id"),
+                c.get("account_id"),
+                c.get("version_id"),
+                c.get("query_hash"),
+                c.get("data_tag"),
+                c.get("result_json"),
+                c.get("created_at"),
+            ),
+        )
+
+    for row in portfolios:
+        try:
+            _upsert_portfolio(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"strategy_portfolio import failed: {e}")
+    for row in versions:
+        try:
+            _upsert_version(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"strategy_version import failed: {e}")
+    for row in holdings:
+        try:
+            _upsert_holding(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"strategy_holding import failed: {e}")
+    for row in batches:
+        try:
+            _upsert_batch(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"rebalance_batch import failed: {e}")
+    for row in orders:
+        try:
+            _upsert_order(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"rebalance_order import failed: {e}")
+    for row in backtest_cache:
+        try:
+            _upsert_backtest_cache(row)
+            result["imported"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            result["errors"].append(f"backtest_cache import failed: {e}")
+
+    return result

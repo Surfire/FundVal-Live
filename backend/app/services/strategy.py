@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+import hashlib
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,12 +21,15 @@ logger = logging.getLogger(__name__)
 RISK_FREE_RATE = 0.02
 TRADING_DAYS_PER_YEAR = 252
 PERF_CACHE_TTL_SECONDS = 60
+BACKTEST_CACHE_TTL_SECONDS = 300
+BACKTEST_ENGINE_VERSION = 2
 
 _PERF_CACHE: Dict[Tuple[int, int], Tuple[float, Dict[str, Any]]] = {}
 _FUND_NAME_CACHE: Dict[str, str] = {}
 _FUND_NAME_CACHE_TS: float = 0.0
 _FUND_NAME_SEARCH_CACHE: Dict[str, str] = {}
 _FUND_NAME_SEARCH_CACHE_TS: float = 0.0
+_BACKTEST_MEM_CACHE: Dict[Tuple[int, int, str], Tuple[float, Dict[str, Any]]] = {}
 
 def _parse_weight(value: Any) -> float:
     w = float(value)
@@ -343,11 +347,16 @@ def _to_date(d: Optional[str]) -> date:
 def _invalidate_perf_cache(portfolio_id: Optional[int] = None):
     if portfolio_id is None:
         _PERF_CACHE.clear()
+        _BACKTEST_MEM_CACHE.clear()
         return
 
     keys = [k for k in _PERF_CACHE.keys() if k[0] == portfolio_id]
     for k in keys:
         _PERF_CACHE.pop(k, None)
+
+    bk_keys = [k for k in _BACKTEST_MEM_CACHE.keys() if k[0] == portfolio_id]
+    for k in bk_keys:
+        _BACKTEST_MEM_CACHE.pop(k, None)
 
 
 def _fetch_account_positions(account_id: int, code_scope: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -1323,35 +1332,62 @@ def get_portfolio_positions_view(portfolio_id: int, account_id: int) -> Dict[str
     }
 
 
-def _get_cached_history_series(code: str, start_date: pd.Timestamp) -> pd.Series:
+def _get_db_history_series(code: str, start_date: pd.Timestamp, end_date: Optional[pd.Timestamp] = None) -> pd.Series:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT date, nav
-        FROM fund_history
-        WHERE code = ? AND date >= ?
-        ORDER BY date ASC
-        """,
-        (code, start_date.strftime("%Y-%m-%d")),
-    )
+    if end_date is None:
+        cursor.execute(
+            """
+            SELECT date, nav
+            FROM fund_history
+            WHERE code = ? AND date >= ?
+            ORDER BY date ASC
+            """,
+            (code, start_date.strftime("%Y-%m-%d")),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT date, nav
+            FROM fund_history
+            WHERE code = ? AND date >= ? AND date <= ?
+            ORDER BY date ASC
+            """,
+            (code, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
+        )
     rows = cursor.fetchall()
     conn.close()
 
-    if len(rows) >= 30:
-        return pd.Series(
-            [float(r["nav"]) for r in rows],
-            index=pd.to_datetime([r["date"] for r in rows]),
-            dtype=float,
-        )
+    if not rows:
+        return pd.Series(dtype=float)
+
+    return pd.Series(
+        [float(r["nav"]) for r in rows],
+        index=pd.to_datetime([r["date"] for r in rows]),
+        dtype=float,
+    )
+
+
+def _get_cached_history_series(
+    code: str,
+    start_date: pd.Timestamp,
+    end_date: Optional[pd.Timestamp] = None,
+    fetch_missing: bool = True,
+) -> pd.Series:
+    db_series = _get_db_history_series(code, start_date, end_date=end_date)
+    if len(db_series) >= 30 or not fetch_missing:
+        return db_series
 
     history = get_fund_history(code, limit=1500)
     if not history:
-        return pd.Series(dtype=float)
+        return db_series
 
     filtered = [h for h in history if h["date"] >= start_date.strftime("%Y-%m-%d")]
+    if end_date is not None:
+        end_str = end_date.strftime("%Y-%m-%d")
+        filtered = [h for h in filtered if h["date"] <= end_str]
     if not filtered:
-        return pd.Series(dtype=float)
+        return db_series
 
     return pd.Series(
         [float(h["nav"]) for h in filtered],
@@ -1360,13 +1396,18 @@ def _get_cached_history_series(code: str, start_date: pd.Timestamp) -> pd.Series
     )
 
 
-def _build_portfolio_return_series(weight_map: Dict[str, float], start_date: pd.Timestamp) -> pd.Series:
+def _build_portfolio_return_series(
+    weight_map: Dict[str, float],
+    start_date: pd.Timestamp,
+    end_date: Optional[pd.Timestamp] = None,
+    fetch_missing: bool = True,
+) -> pd.Series:
     if not weight_map:
         return pd.Series(dtype=float)
 
     nav_frames = {}
     for code, _ in weight_map.items():
-        series = _get_cached_history_series(code, start_date)
+        series = _get_cached_history_series(code, start_date, end_date=end_date, fetch_missing=fetch_missing)
         if not series.empty:
             nav_frames[code] = series
 
@@ -1390,9 +1431,9 @@ def _build_portfolio_return_series(weight_map: Dict[str, float], start_date: pd.
     return portfolio_returns
 
 
-def _fetch_hs300_returns(start_date: pd.Timestamp) -> pd.Series:
+def _fetch_hs300_returns(start_date: pd.Timestamp, end_date: Optional[pd.Timestamp] = None) -> pd.Series:
     start = start_date.strftime("%Y%m%d")
-    end = datetime.now().strftime("%Y%m%d")
+    end = (end_date or pd.Timestamp(datetime.now())).strftime("%Y%m%d")
 
     try:
         df = ak.index_zh_a_hist(symbol="000300", period="daily", start_date=start, end_date=end)
@@ -1407,6 +1448,8 @@ def _fetch_hs300_returns(start_date: pd.Timestamp) -> pd.Series:
         if df is not None and not df.empty:
             s = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"]))
             s = s[s.index >= start_date]
+            if end_date is not None:
+                s = s[s.index <= end_date]
             return s.pct_change().fillna(0.0)
     except Exception as e:
         logger.warning(f"Failed to fetch HS300 by stock_zh_index_daily_em: {e}")
@@ -1414,12 +1457,12 @@ def _fetch_hs300_returns(start_date: pd.Timestamp) -> pd.Series:
     return pd.Series(dtype=float)
 
 
-def _calculate_period_returns(nav: pd.Series) -> Dict[str, Optional[float]]:
+def _calculate_period_returns(nav: pd.Series, as_of: Optional[pd.Timestamp] = None) -> Dict[str, Optional[float]]:
     if nav.empty:
         return {"week": None, "month": None, "quarter": None, "year": None, "ytd": None}
 
     latest_value = float(nav.iloc[-1])
-    now = pd.Timestamp.now().normalize()
+    now = (as_of or pd.Timestamp.now()).normalize()
 
     week_start = now - pd.Timedelta(days=now.weekday())
     month_start = now.replace(day=1)
@@ -1535,6 +1578,424 @@ def _estimate_intraday_rate(weight_map: Dict[str, float]) -> Optional[float]:
     if used <= 0:
         return None
     return weighted / used
+
+
+def _infer_lot_size(code: str, name: str) -> int:
+    # ETF/场内通常按 100 份交易；普通场外基金按 1 份。
+    hint = f"{code} {name}".upper()
+    if "ETF" in hint:
+        return 100
+    return 1
+
+
+def _json_hash(obj: Dict[str, Any]) -> str:
+    raw = json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _build_history_data_tag(codes: List[str], start_date: pd.Timestamp, end_date: pd.Timestamp) -> str:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    parts: List[str] = []
+    try:
+        for code in sorted(set(codes)):
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX(updated_at), ''), COUNT(*) AS cnt
+                FROM fund_history
+                WHERE code = ? AND date >= ? AND date <= ?
+                """,
+                (code, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
+            )
+            row = cursor.fetchone()
+            ts = str(row[0] or "")
+            cnt = int(row[1] or 0)
+            parts.append(f"{code}:{ts}:{cnt}")
+    finally:
+        conn.close()
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _load_backtest_cache(
+    portfolio_id: int,
+    account_id: int,
+    version_id: Optional[int],
+    query_hash: str,
+    data_tag: str,
+) -> Optional[Dict[str, Any]]:
+    mem_key = (portfolio_id, account_id, f"{version_id}:{query_hash}:{data_tag}")
+    now = time.time()
+    cached = _BACKTEST_MEM_CACHE.get(mem_key)
+    if cached and now - cached[0] <= BACKTEST_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT result_json, created_at
+            FROM strategy_backtest_cache
+            WHERE portfolio_id = ? AND account_id = ?
+              AND COALESCE(version_id, 0) = COALESCE(?, 0)
+              AND query_hash = ? AND data_tag = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (portfolio_id, account_id, version_id, query_hash, data_tag),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    try:
+        result = json.loads(row["result_json"])
+    except Exception:
+        return None
+    _BACKTEST_MEM_CACHE[mem_key] = (now, result)
+    return result
+
+
+def _save_backtest_cache(
+    portfolio_id: int,
+    account_id: int,
+    version_id: Optional[int],
+    query_hash: str,
+    data_tag: str,
+    result: Dict[str, Any],
+) -> None:
+    mem_key = (portfolio_id, account_id, f"{version_id}:{query_hash}:{data_tag}")
+    _BACKTEST_MEM_CACHE[mem_key] = (time.time(), result)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO strategy_backtest_cache (
+                portfolio_id, account_id, version_id, query_hash, data_tag, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (portfolio_id, account_id, version_id, query_hash, data_tag, json.dumps(result, ensure_ascii=False)),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def run_backtest(
+    portfolio_id: int,
+    account_id: int,
+    start_date: str,
+    end_date: str,
+    initial_capital: float,
+    rebalance_mode: str = "threshold",
+    threshold: float = 0.005,
+    periodic_days: int = 20,
+    fee_rate: Optional[float] = None,
+    cache_only: bool = False,
+) -> Dict[str, Any]:
+    if initial_capital <= 0:
+        raise ValueError("initial_capital must be > 0")
+
+    mode = str(rebalance_mode or "threshold").strip().lower()
+    if mode not in {"none", "threshold", "periodic", "hybrid"}:
+        raise ValueError("invalid rebalance_mode")
+
+    start_ts = pd.Timestamp(_to_date(start_date))
+    end_ts = pd.Timestamp(_to_date(end_date))
+    if end_ts < start_ts:
+        raise ValueError("end_date must be >= start_date")
+
+    detail = get_portfolio_detail(portfolio_id)
+    active_version = detail.get("active_version")
+    holdings = detail.get("active_holdings", [])
+    if not holdings:
+        raise ValueError("strategy has no active holdings")
+
+    weights = {h["code"]: float(h["weight"]) for h in holdings}
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        raise ValueError("invalid target holdings")
+    weights = {k: v / weight_sum for k, v in weights.items()}
+
+    applied_fee = float(detail["portfolio"]["fee_rate"] if fee_rate is None else fee_rate)
+    threshold = max(0.0, float(threshold or 0.0))
+    periodic_days = max(1, int(periodic_days or 1))
+
+    query_payload = {
+        "engine_version": BACKTEST_ENGINE_VERSION,
+        "portfolio_id": portfolio_id,
+        "account_id": account_id,
+        "version_id": active_version["id"] if active_version else None,
+        "start_date": start_ts.strftime("%Y-%m-%d"),
+        "end_date": end_ts.strftime("%Y-%m-%d"),
+        "initial_capital": round(float(initial_capital), 4),
+        "rebalance_mode": mode,
+        "threshold": round(threshold, 6),
+        "periodic_days": periodic_days,
+        "fee_rate": round(applied_fee, 8),
+        "cache_only": bool(cache_only),
+    }
+    query_hash = _json_hash(query_payload)
+    data_tag = _build_history_data_tag(list(weights.keys()), start_ts, end_ts)
+    cached = _load_backtest_cache(portfolio_id, account_id, active_version["id"] if active_version else None, query_hash, data_tag)
+    if cached:
+        return cached
+
+    nav_frames: Dict[str, pd.Series] = {}
+    name_map: Dict[str, str] = {}
+    lot_map: Dict[str, int] = {}
+    for code in sorted(weights.keys()):
+        s = _get_cached_history_series(code, start_ts, end_date=end_ts, fetch_missing=not cache_only)
+        if s.empty:
+            continue
+        nav_frames[code] = s
+        nm = _resolve_fund_name(code)
+        name_map[code] = nm
+        lot_map[code] = _infer_lot_size(code, nm)
+
+    if not nav_frames:
+        raise ValueError("回测区间没有可用净值数据")
+
+    nav_df = pd.concat(nav_frames, axis=1).sort_index().ffill().dropna(how="all")
+    nav_df = nav_df[(nav_df.index >= start_ts) & (nav_df.index <= end_ts)]
+    usable_codes = [c for c in nav_df.columns if not nav_df[c].isna().all()]
+    if not usable_codes:
+        raise ValueError("回测区间没有可用标的净值")
+    nav_df = nav_df[usable_codes].ffill().dropna(how="all")
+
+    weights = {c: weights[c] for c in usable_codes}
+    wsum = sum(weights.values())
+    weights = {c: weights[c] / wsum for c in usable_codes}
+
+    dates = list(nav_df.index)
+    first_prices = nav_df.iloc[0].to_dict()
+    shares: Dict[str, float] = {}
+    for code in usable_codes:
+        px = float(first_prices.get(code, 0.0) or 0.0)
+        if px <= 0:
+            shares[code] = 0.0
+            continue
+        shares[code] = (initial_capital * weights[code]) / px
+    cash = 0.0
+
+    equity_track: List[Tuple[pd.Timestamp, float]] = []
+    trades: List[Dict[str, Any]] = []
+    rebalance_count = 0
+    total_fee = 0.0
+    turnover = 0.0
+    last_rebalance_idx = 0
+
+    def mark_to_market(prices: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+        pos_values: Dict[str, float] = {}
+        total = cash
+        for c in usable_codes:
+            px = float(prices.get(c, 0.0) or 0.0)
+            val = float(shares.get(c, 0.0)) * px if px > 0 else 0.0
+            pos_values[c] = val
+            total += val
+        return total, pos_values
+
+    for i, dt in enumerate(dates):
+        prices = nav_df.loc[dt].to_dict()
+        total_equity, pos_values = mark_to_market(prices)
+        equity_track.append((dt, total_equity))
+        if total_equity <= 0:
+            continue
+
+        cur_weights = {c: (pos_values.get(c, 0.0) / total_equity) for c in usable_codes}
+        threshold_hit = any(abs(cur_weights[c] - weights[c]) >= threshold for c in usable_codes)
+        periodic_hit = (i - last_rebalance_idx) >= periodic_days and i > 0
+
+        should_rebalance = False
+        reason = ""
+        if mode == "threshold" and threshold_hit:
+            should_rebalance = True
+            reason = "threshold"
+        elif mode == "periodic" and periodic_hit:
+            should_rebalance = True
+            reason = "periodic"
+        elif mode == "hybrid" and (threshold_hit or periodic_hit):
+            should_rebalance = True
+            reason = "hybrid"
+
+        if not should_rebalance:
+            continue
+
+        sell_orders: List[Tuple[str, float, float, float]] = []
+        buy_orders: List[Tuple[str, float, float, float]] = []
+        for code in usable_codes:
+            px = float(prices.get(code, 0.0) or 0.0)
+            if px <= 0:
+                continue
+            target_value = total_equity * weights[code]
+            current_value = pos_values.get(code, 0.0)
+            delta_value = target_value - current_value
+            raw_delta_shares = delta_value / px
+            lot = lot_map.get(code, 1)
+            if lot <= 1:
+                exec_shares = raw_delta_shares
+            else:
+                lots = int(abs(raw_delta_shares) // lot)
+                exec_shares = float(lots * lot)
+                if raw_delta_shares < 0:
+                    exec_shares = -exec_shares
+            if abs(exec_shares) < 1e-8:
+                continue
+            trade_amount = abs(exec_shares) * px
+            if exec_shares < 0:
+                sell_orders.append((code, exec_shares, px, trade_amount))
+            else:
+                buy_orders.append((code, exec_shares, px, trade_amount))
+
+        if not sell_orders and not buy_orders:
+            continue
+
+        rebalance_count += 1
+        last_rebalance_idx = i
+
+        for code, exec_shares, px, trade_amount in sell_orders:
+            fee = trade_amount * applied_fee
+            available = shares.get(code, 0.0)
+            sell_shares = min(abs(exec_shares), available)
+            if sell_shares <= 0:
+                continue
+            sell_amount = sell_shares * px
+            fee = sell_amount * applied_fee
+            shares[code] = max(0.0, available - sell_shares)
+            cash += sell_amount - fee
+            total_fee += fee
+            turnover += sell_amount
+            trades.append(
+                {
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "code": code,
+                    "name": name_map.get(code, code),
+                    "action": "sell",
+                    "shares": round(sell_shares, 4),
+                    "price": round(px, 4),
+                    "amount": round(sell_amount, 2),
+                    "fee": round(fee, 2),
+                    "reason": reason,
+                }
+            )
+
+        for code, exec_shares, px, _ in buy_orders:
+            plan_amount = abs(exec_shares) * px
+            max_affordable = cash / (1.0 + applied_fee) if applied_fee >= 0 else cash
+            buy_amount = min(plan_amount, max_affordable)
+            if buy_amount <= 0:
+                continue
+            buy_shares = buy_amount / px
+            lot = lot_map.get(code, 1)
+            if lot > 1:
+                lots = int(buy_shares // lot)
+                buy_shares = float(lots * lot)
+                buy_amount = buy_shares * px
+            if buy_shares <= 0:
+                continue
+
+            fee = buy_amount * applied_fee
+            if buy_amount + fee > cash + 1e-8:
+                continue
+            shares[code] = shares.get(code, 0.0) + buy_shares
+            cash -= (buy_amount + fee)
+            total_fee += fee
+            turnover += buy_amount
+            trades.append(
+                {
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "code": code,
+                    "name": name_map.get(code, code),
+                    "action": "buy",
+                    "shares": round(buy_shares, 4),
+                    "price": round(px, 4),
+                    "amount": round(buy_amount, 2),
+                    "fee": round(fee, 2),
+                    "reason": reason,
+                }
+            )
+
+    equity_series = pd.Series([v for _, v in equity_track], index=[d for d, _ in equity_track], dtype=float)
+    if equity_series.empty or len(equity_series) < 2:
+        raise ValueError("回测样本不足，无法计算")
+    strategy_returns = equity_series.pct_change().fillna(0.0)
+    benchmark_returns = _fetch_hs300_returns(start_ts, end_date=end_ts)
+    if benchmark_returns.empty:
+        benchmark_returns = pd.Series(dtype=float)
+    else:
+        if not isinstance(benchmark_returns.index, pd.DatetimeIndex):
+            benchmark_returns.index = pd.to_datetime(benchmark_returns.index, errors="coerce")
+            benchmark_returns = benchmark_returns[~benchmark_returns.index.isna()]
+        if not benchmark_returns.empty:
+            benchmark_returns = benchmark_returns[
+                (benchmark_returns.index >= strategy_returns.index.min())
+                & (benchmark_returns.index <= strategy_returns.index.max())
+            ]
+
+    strategy_metrics = _calculate_metrics(strategy_returns, benchmark_returns)
+    strategy_periods = _calculate_period_returns((1 + strategy_returns).cumprod(), as_of=end_ts)
+
+    strategy_curve = _to_return_points(strategy_returns)
+    if benchmark_returns.empty:
+        benchmark_for_chart = pd.Series(0.0, index=strategy_returns.index, dtype=float)
+    else:
+        benchmark_for_chart = benchmark_returns.reindex(strategy_returns.index).ffill().fillna(0.0)
+    benchmark_curve = _to_return_points(benchmark_for_chart)
+    if not benchmark_curve:
+        benchmark_curve = [{"date": start_ts.strftime("%Y-%m-%d"), "return": 0.0}]
+
+    final_value = float(equity_series.iloc[-1])
+    result = {
+        "portfolio": detail["portfolio"],
+        "active_version": active_version,
+        "params": {
+            "start_date": start_ts.strftime("%Y-%m-%d"),
+            "end_date": end_ts.strftime("%Y-%m-%d"),
+            "initial_capital": round(float(initial_capital), 2),
+            "rebalance_mode": mode,
+            "threshold": threshold,
+            "periodic_days": periodic_days,
+            "fee_rate": applied_fee,
+            "cache_only": bool(cache_only),
+        },
+        "capital": {
+            "principal": round(float(initial_capital), 2),
+            "market_value": round(final_value, 2),
+            "profit": round(final_value - float(initial_capital), 2),
+            "profit_rate": round((final_value / float(initial_capital) - 1.0), 6),
+            "cash": round(float(cash), 2),
+        },
+        "period_returns": {"strategy": strategy_periods},
+        "metrics": {"strategy": strategy_metrics},
+        "series": {
+            "strategy": strategy_curve,
+            "benchmark": benchmark_curve,
+        },
+        "rebalance_summary": {
+            "rebalance_count": rebalance_count,
+            "trade_count": len(trades),
+            "turnover": round(float(turnover), 2),
+            "fee_total": round(float(total_fee), 2),
+        },
+        "trades": trades,
+    }
+
+    _save_backtest_cache(
+        portfolio_id,
+        account_id,
+        active_version["id"] if active_version else None,
+        query_hash,
+        data_tag,
+        result,
+    )
+    return result
 
 
 def get_performance(portfolio_id: int, account_id: int) -> Dict[str, Any]:

@@ -246,6 +246,11 @@ export const getStrategyPerformance = async (portfolioId, accountId) => {
     return response.data;
 };
 
+export const runStrategyBacktest = async (portfolioId, data) => {
+    const response = await api.post(`/strategy/portfolios/${portfolioId}/backtest`, data);
+    return response.data;
+};
+
 export const getStrategyPositionsView = async (portfolioId, accountId) => {
     const response = await api.get(`/strategy/portfolios/${portfolioId}/positions`, {
         params: { account_id: accountId }
@@ -309,5 +314,18 @@ export const listRebalanceBatches = async (portfolioId, accountId) => {
 
 export const completeRebalanceBatch = async (batchId) => {
     const response = await api.post(`/strategy/rebalance-batches/${batchId}/complete`);
+    return response.data;
+};
+
+export const getBacktestPromptPresets = async () => {
+    const response = await api.get('/ai/backtest-prompts');
+    return response.data.prompts || [];
+};
+
+export const analyzeBacktestWithAI = async (backtestResult, style = 'hardcore_audit') => {
+    const response = await api.post('/ai/analyze_backtest', {
+        backtest_result: backtestResult,
+        style
+    });
     return response.data;
 };
