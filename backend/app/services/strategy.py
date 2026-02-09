@@ -1454,6 +1454,18 @@ def _fetch_hs300_returns(start_date: pd.Timestamp, end_date: Optional[pd.Timesta
     except Exception as e:
         logger.warning(f"Failed to fetch HS300 by stock_zh_index_daily_em: {e}")
 
+    # Sina index fallback: more stable in some network/proxy environments.
+    try:
+        df = ak.stock_zh_index_daily(symbol="sh000300")
+        if df is not None and not df.empty:
+            s = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"]))
+            s = s[s.index >= start_date]
+            if end_date is not None:
+                s = s[s.index <= end_date]
+            return s.pct_change().fillna(0.0)
+    except Exception as e:
+        logger.warning(f"Failed to fetch HS300 by stock_zh_index_daily: {e}")
+
     return pd.Series(dtype=float)
 
 
