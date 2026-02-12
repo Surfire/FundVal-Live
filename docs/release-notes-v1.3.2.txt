@@ -1,0 +1,21 @@
+FundVal Live v1.3.2 (2026-02-12)
+
+Added
+- HK symbol normalization across search/strategy flows (HK3441 / 3441.HK -> 03441).
+- Free HK data fallback pipeline:
+  - Real-time quote from Sina HK feed.
+  - Daily history from AkShare stock_hk_daily.
+  - Yahoo chart API fallback for HK history.
+- In-batch rebalance refresh API (refresh current batch in-place, no new batch creation).
+
+Changed
+- Strategy update flow now defaults auto-rebalance lot_size to 100 to avoid odd-lot fractional ETF suggestions.
+- OCR holdings import in strategy update mode now replaces target holdings instead of appending.
+- Rebalance batch/detail time rendering now displays Beijing time (Asia/Shanghai).
+
+Fixed
+- Watchlist add ambiguity for HK symbols (03441 no longer shadowed by 003441 fuzzy hit).
+- Duplicate submission on strategy create/update and smart rebalance actions (loading guards + disabled buttons).
+- "Refresh calculation" moved to batch detail, now refreshes current batch only.
+- Refresh endpoint compatibility fallback in frontend (POST /refresh -> PATCH /refresh -> POST /recalc) to reduce 405 issues.
+- Reduced chart width/height warning probability by adding minimum dimensions.

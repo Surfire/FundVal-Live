@@ -1,7 +1,8 @@
 import time
 import json
 import re
-from typing import List, Dict, Any
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
 
 import pandas as pd
 import akshare as ak
@@ -9,6 +10,167 @@ import requests
 
 from ..db import get_db_connection
 from ..config import Config
+
+def normalize_asset_code(code: str) -> str:
+    """
+    Normalize user input to canonical symbol.
+    HK examples:
+      HK3441 -> 03441
+      3441.HK -> 03441
+      hk03441 -> 03441
+    """
+    raw = str(code or "").strip()
+    if not raw:
+        return ""
+
+    upper = raw.upper()
+    m = re.match(r"^HK\s*0*(\d{4,5})$", upper)
+    if m:
+        return m.group(1).zfill(5)
+
+    m = re.match(r"^0*(\d{4,5})\.HK$", upper)
+    if m:
+        return m.group(1).zfill(5)
+
+    return raw
+
+
+def is_hk_code(code: str) -> bool:
+    c = normalize_asset_code(code)
+    return c.isdigit() and len(c) == 5
+
+
+def _get_sina_hk_quote(code: str) -> Dict[str, Any]:
+    """Free HK quote source from Sina."""
+    norm = normalize_asset_code(code)
+    if not is_hk_code(norm):
+        return {}
+    url = f"http://hq.sinajs.cn/list=hk{norm}"
+    headers = {"Referer": "http://finance.sina.com.cn"}
+    try:
+        response = requests.get(url, headers=headers, timeout=8)
+        if response.status_code != 200:
+            return {}
+        text = response.text
+        match = re.search(r'="(.*)"', text)
+        if not match or not match.group(1):
+            return {}
+        parts = match.group(1).split(",")
+        if len(parts) < 9:
+            return {}
+        en_name = str(parts[0] or "").strip()
+        cn_name = str(parts[1] or "").strip()
+        prev_close = float(parts[3] or 0.0)
+        last = float(parts[6] or 0.0)
+        change_pct = float(parts[8] or 0.0)
+        date_s = str(parts[17] or "").strip() if len(parts) > 17 else ""
+        time_s = str(parts[18] or "").strip() if len(parts) > 18 else ""
+        return {
+            "name": cn_name or en_name or norm,
+            "estimate": last if last > 0 else prev_close,
+            "nav": last if last > 0 else prev_close,
+            "estRate": change_pct,
+            "time": f"{date_s} {time_s}".strip(),
+        }
+    except Exception:
+        return {}
+
+
+def _get_ak_hk_history(code: str, limit: int) -> List[Dict[str, Any]]:
+    """Free HK daily history source via AkShare."""
+    norm = normalize_asset_code(code)
+    if not is_hk_code(norm):
+        return []
+    try:
+        df = ak.stock_hk_daily(symbol=norm)
+        if df is None or df.empty:
+            return []
+        if "date" not in df.columns or "close" not in df.columns:
+            return []
+        df = df.copy().sort_values(by="date", ascending=True)
+        if limit < 9999:
+            df = df.tail(limit)
+        out = []
+        for _, row in df.iterrows():
+            d = row.get("date")
+            close = float(row.get("close") or 0.0)
+            if close <= 0:
+                continue
+            date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            out.append({"date": date_str, "nav": close})
+        return out
+    except Exception:
+        return []
+
+
+def _get_ak_hk_latest(code: str) -> Dict[str, Any]:
+    hist = _get_ak_hk_history(code, limit=5)
+    if not hist:
+        return {}
+    last = float(hist[-1]["nav"])
+    prev = float(hist[-2]["nav"]) if len(hist) >= 2 else last
+    est_rate = ((last - prev) / prev * 100.0) if prev > 0 else 0.0
+    return {
+        "name": normalize_asset_code(code),
+        "estimate": last,
+        "nav": last,
+        "estRate": round(est_rate, 4),
+        "time": hist[-1]["date"],
+    }
+
+
+def _get_yahoo_hk_history(code: str, limit: int) -> List[Dict[str, Any]]:
+    """Fallback HK history via Yahoo Finance chart endpoint."""
+    norm = normalize_asset_code(code)
+    if not is_hk_code(norm):
+        return []
+    symbol = f"{int(norm)}.HK"
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range=10y&interval=1d"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return []
+        body = resp.json()
+        result = (((body or {}).get("chart") or {}).get("result") or [None])[0]
+        if not result:
+            return []
+        timestamps = result.get("timestamp") or []
+        quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
+        closes = quote.get("close") or []
+        out = []
+        for ts, close in zip(timestamps, closes):
+            if close is None:
+                continue
+            d = datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            out.append({"date": d, "nav": float(close)})
+        out = sorted(out, key=lambda x: x["date"])
+        if limit < 9999:
+            out = out[-limit:]
+        return out
+    except Exception:
+        return []
+
+
+def _get_yahoo_hk_latest(code: str) -> Dict[str, Any]:
+    hist = _get_yahoo_hk_history(code, limit=5)
+    if not hist:
+        return {}
+    last = float(hist[-1]["nav"])
+    prev = float(hist[-2]["nav"]) if len(hist) >= 2 else last
+    est_rate = ((last - prev) / prev * 100.0) if prev > 0 else 0.0
+    return {
+        "name": normalize_asset_code(code),
+        "estimate": last,
+        "nav": last,
+        "estRate": round(est_rate, 4),
+        "time": hist[-1]["date"],
+    }
+
+
+def _get_hk_name(code: str) -> str:
+    data = _get_sina_hk_quote(code)
+    return str(data.get("name") or "")
 
 
 def get_fund_type(code: str, name: str) -> str:
@@ -23,11 +185,12 @@ def get_fund_type(code: str, name: str) -> str:
     Returns:
         Fund type string
     """
+    norm_code = normalize_asset_code(code)
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT type FROM funds WHERE code = ?", (code,))
+        cursor.execute("SELECT type FROM funds WHERE code = ?", (norm_code,))
         row = cursor.fetchone()
 
         if row and row["type"]:
@@ -109,10 +272,21 @@ def get_combined_valuation(code: str) -> Dict[str, Any]:
     """
     Try Eastmoney first, fallback to Sina.
     """
-    data = get_eastmoney_valuation(code)
+    norm_code = normalize_asset_code(code)
+    if is_hk_code(norm_code):
+        # HK: free sources first
+        data = _get_sina_hk_quote(norm_code)
+        if data and float(data.get("estimate", 0.0) or 0.0) > 0:
+            return data
+        data = _get_ak_hk_latest(norm_code)
+        if data and float(data.get("estimate", 0.0) or 0.0) > 0:
+            return data
+        return _get_yahoo_hk_latest(norm_code)
+
+    data = get_eastmoney_valuation(norm_code)
     if not data or data.get("estimate") == 0.0:
         # Fallback to Sina
-        sina_data = get_sina_valuation(code)
+        sina_data = get_sina_valuation(norm_code)
         if sina_data:
             # Merge Sina info into Eastmoney structure
             data.update(sina_data)
@@ -127,18 +301,26 @@ def search_funds(q: str) -> List[Dict[str, Any]]:
         return []
 
     q_clean = q.strip()
+    q_norm = normalize_asset_code(q_clean)
     pattern = f"%{q_clean}%"
+    prefix_pattern = f"{q_norm}%"
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute("""
-            SELECT code, name, type 
-            FROM funds 
-            WHERE code LIKE ? OR name LIKE ? 
+        cursor.execute(
+            """
+            SELECT code, name, type,
+                   CASE WHEN code = ? THEN 1 ELSE 0 END AS exact_hit,
+                   CASE WHEN code LIKE ? THEN 1 ELSE 0 END AS prefix_hit
+            FROM funds
+            WHERE code LIKE ? OR name LIKE ?
+            ORDER BY exact_hit DESC, prefix_hit DESC, code ASC
             LIMIT 20
-        """, (pattern, pattern))
+            """,
+            (q_norm, prefix_pattern, pattern, pattern),
+        )
         
         rows = cursor.fetchall()
         
@@ -149,6 +331,15 @@ def search_funds(q: str) -> List[Dict[str, Any]]:
                 "name": row["name"],
                 "type": row["type"] or "未知"
             })
+        if is_hk_code(q_norm):
+            name = _get_hk_name(q_norm) or f"港股标的 {q_norm}"
+            hk_item = {
+                "id": q_norm,
+                "name": name,
+                "type": "港股"
+            }
+            if not any(item["id"] == q_norm for item in results):
+                results.insert(0, hk_item)
         return results
     finally:
         conn.close()
@@ -227,7 +418,8 @@ def _get_fund_info_from_db(code: str) -> Dict[str, Any]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT name, type FROM funds WHERE code = ?", (code,))
+        norm_code = normalize_asset_code(code)
+        cursor.execute("SELECT name, type FROM funds WHERE code = ?", (norm_code,))
         row = cursor.fetchone()
         conn.close()
         if row:
@@ -334,6 +526,30 @@ def get_fund_history(code: str, limit: int = 30) -> List[Dict[str, Any]]:
     from ..db import get_db_connection
     import time
 
+    norm_code = normalize_asset_code(code)
+
+    if is_hk_code(norm_code):
+        # HK symbols use free HK data sources directly.
+        hk_history = _get_ak_hk_history(norm_code, limit)
+        if not hk_history:
+            hk_history = _get_yahoo_hk_history(norm_code, limit)
+        if not hk_history:
+            return []
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        for item in hk_history:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO fund_history (code, date, nav, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (norm_code, item["date"], float(item["nav"])),
+            )
+        conn.commit()
+        conn.close()
+        return hk_history
+
     # 1. Try to get from database cache first
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -344,14 +560,14 @@ def get_fund_history(code: str, limit: int = 30) -> List[Dict[str, Any]]:
             SELECT date, nav, updated_at FROM fund_history
             WHERE code = ?
             ORDER BY date DESC
-        """, (code,))
+        """, (norm_code,))
     else:
         cursor.execute("""
             SELECT date, nav, updated_at FROM fund_history
             WHERE code = ?
             ORDER BY date DESC
             LIMIT ?
-        """, (code, limit))
+        """, (norm_code, limit))
 
     rows = cursor.fetchall()
 
@@ -392,7 +608,7 @@ def get_fund_history(code: str, limit: int = 30) -> List[Dict[str, Any]]:
 
     # 2. Cache miss or stale, fetch from API
     try:
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        df = ak.fund_open_fund_info_em(symbol=norm_code, indicator="单位净值走势")
         if df is None or df.empty:
             conn.close()
             return []
@@ -415,7 +631,7 @@ def get_fund_history(code: str, limit: int = 30) -> List[Dict[str, Any]]:
             cursor.execute("""
                 INSERT OR REPLACE INTO fund_history (code, date, nav, updated_at)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            """, (code, date_str, nav_value))
+            """, (norm_code, date_str, nav_value))
 
         conn.commit()
         conn.close()
@@ -496,8 +712,10 @@ def get_fund_intraday(code: str) -> Dict[str, Any]:
     """
     Get fund holdings + real-time valuation estimate.
     """
+    norm_code = normalize_asset_code(code)
+
     # 1) Get real-time valuation (Multi-source)
-    em_data = get_combined_valuation(code)
+    em_data = get_combined_valuation(norm_code)
     
     name = em_data.get("name")
     nav = float(em_data.get("nav", 0.0))
@@ -506,20 +724,20 @@ def get_fund_intraday(code: str) -> Dict[str, Any]:
     update_time = em_data.get("time", time.strftime("%H:%M:%S"))
 
     # 1.5) Enrich with detailed info
-    pz_data = get_eastmoney_pingzhong_data(code)
+    pz_data = get_eastmoney_pingzhong_data(norm_code)
     extra_info = {}
     if pz_data.get("name"): extra_info["full_name"] = pz_data["name"]
     if pz_data.get("manager"): extra_info["manager"] = pz_data["manager"]
     for k in ["syl_1n", "syl_6y", "syl_3y", "syl_1y"]:
         if pz_data.get(k): extra_info[k] = pz_data[k]
     
-    db_info = _get_fund_info_from_db(code)
+    db_info = _get_fund_info_from_db(norm_code)
     if db_info:
         if not extra_info.get("full_name"): extra_info["full_name"] = db_info["name"]
         extra_info["official_type"] = db_info["type"]
 
     if not name:
-        name = extra_info.get("full_name", f"基金 {code}")
+        name = extra_info.get("full_name", _get_hk_name(norm_code) or f"基金 {norm_code}")
     manager = extra_info.get("manager", "--")
 
     # 2) Use history from PingZhong for Indicators
@@ -530,7 +748,7 @@ def get_fund_intraday(code: str) -> Dict[str, Any]:
         tech_indicators = _calculate_technical_indicators(history_data[-250:])
     else:
         # Fallback to AkShare if PingZhong missed it (unlikely)
-        history_data = get_fund_history(code, limit=250)
+        history_data = get_fund_history(norm_code, limit=250)
         tech_indicators = _calculate_technical_indicators(history_data)
 
     # 3) Get holdings from AkShare
@@ -538,10 +756,10 @@ def get_fund_intraday(code: str) -> Dict[str, Any]:
     concentration_rate = 0.0
     try:
         current_year = str(time.localtime().tm_year)
-        holdings_df = ak.fund_portfolio_hold_em(symbol=code, date=current_year)
+        holdings_df = ak.fund_portfolio_hold_em(symbol=norm_code, date=current_year)
         if holdings_df is None or holdings_df.empty:
              prev_year = str(time.localtime().tm_year - 1)
-             holdings_df = ak.fund_portfolio_hold_em(symbol=code, date=prev_year)
+             holdings_df = ak.fund_portfolio_hold_em(symbol=norm_code, date=prev_year)
              
         if not holdings_df.empty:
             holdings_df = holdings_df.copy()
@@ -574,10 +792,10 @@ def get_fund_intraday(code: str) -> Dict[str, Any]:
         pass
 
     # 4) Determine sector/type
-    sector = get_fund_type(code, name)
+    sector = get_fund_type(norm_code, name)
     
     response = {
-        "id": str(code),
+        "id": str(norm_code),
         "name": name,
         "type": sector, 
         "manager": manager,

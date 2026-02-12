@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # 需要加密的字段
-ENCRYPTED_FIELDS = {"OPENAI_API_KEY", "SMTP_PASSWORD"}
+ENCRYPTED_FIELDS = {"OPENAI_API_KEY", "SMTP_PASSWORD", "TUSHARE_PRO_TOKEN"}
 
 # 字段验证规则
 def validate_email(email: str) -> bool:
@@ -56,6 +56,7 @@ def get_settings():
                 "OPENAI_API_BASE": Config.OPENAI_API_BASE,
                 "AI_MODEL_NAME": Config.AI_MODEL_NAME,
                 "OCR_MODEL_NAME": Config.OCR_MODEL_NAME,
+                "TUSHARE_PRO_TOKEN": "***" if Config.TUSHARE_PRO_TOKEN else "",
                 "SMTP_HOST": Config.SMTP_HOST,
                 "SMTP_PORT": str(Config.SMTP_PORT),
                 "SMTP_USER": Config.SMTP_USER,

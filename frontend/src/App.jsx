@@ -20,6 +20,17 @@ import packageJson from '../../package.json';
 
 const APP_VERSION = packageJson.version;
 
+function normalizeAssetCode(code = '') {
+  const raw = String(code || '').trim();
+  if (!raw) return '';
+  const upper = raw.toUpperCase();
+  let m = upper.match(/^HK\s*0*(\d{4,5})$/);
+  if (m) return m[1].padStart(5, '0');
+  m = upper.match(/^0*(\d{4,5})\.HK$/);
+  if (m) return m[1].padStart(5, '0');
+  return raw;
+}
+
 export default function App() {
   // --- State ---
   const [currentView, setCurrentView] = useState('list'); // 'list' | 'detail' | 'account' | 'strategy' | 'settings'
@@ -220,7 +231,8 @@ export default function App() {
     try {
         const results = await searchFunds(searchQuery);
         if (results && results.length > 0) {
-           const fundMeta = results[0];
+           const qNorm = normalizeAssetCode(searchQuery);
+           const fundMeta = results.find((x) => String(x.id) === qNorm) || results[0];
 
            // Fetch initial detail
            try {

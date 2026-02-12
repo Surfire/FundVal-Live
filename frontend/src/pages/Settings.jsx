@@ -15,6 +15,7 @@ export default function Settings() {
     OPENAI_API_BASE: '',
     AI_MODEL_NAME: '',
     OCR_MODEL_NAME: 'Qwen/Qwen3-VL-32B-Instruct',
+    TUSHARE_PRO_TOKEN: '',
     SMTP_HOST: '',
     SMTP_PORT: '',
     SMTP_USER: '',
@@ -47,7 +48,7 @@ export default function Settings() {
       if (!response.ok) throw new Error('Failed to load settings');
       const data = await response.json();
 
-      setSettings(data.settings || {});
+      setSettings((prev) => ({ ...prev, ...(data.settings || {}) }));
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
     } finally {
@@ -329,6 +330,19 @@ export default function Settings() {
             placeholder="Qwen/Qwen3-VL-32B-Instruct"
           />
           <p className="mt-1 text-xs text-gray-500">用于策略新建里的图片持仓识别（OCR/VLM）。</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Tushare Pro Token（港股补源可选）
+          </label>
+          <input
+            type="password"
+            value={settings.TUSHARE_PRO_TOKEN}
+            onChange={(e) => handleChange('TUSHARE_PRO_TOKEN', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="填写后可用于港股日线/收盘价补源"
+          />
         </div>
       </div>
 

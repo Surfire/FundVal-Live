@@ -26,6 +26,7 @@ import {
   listRebalanceBatches,
   listRebalanceOrders,
   listStrategyPortfolios,
+  refreshRebalanceBatch,
   reducePositionTrade,
   recognizeStrategyHoldingsFromImage,
   searchFunds,
@@ -80,6 +81,20 @@ function getBatchTypeLabel(source = '') {
   if (source === 'add') return '加仓';
   if (source === 'reduce') return '减仓';
   return '调仓';
+}
+
+function formatBeijingTime(value) {
+  if (!value) return '--';
+  const text = String(value).trim();
+  if (!text) return '--';
+  const iso = text.includes('T') ? text : text.replace(' ', 'T');
+  const utcCandidate = iso.endsWith('Z') ? iso : `${iso}Z`;
+  const d = new Date(utcCandidate);
+  if (Number.isNaN(d.getTime())) return text.slice(0, 16);
+  return d.toLocaleString('zh-CN', {
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+  }).replace(/\//g, '-').slice(0, 16);
 }
 
 function mergeSeries(strategySeries = [], benchmarkSeries = []) {
@@ -143,6 +158,7 @@ function StrategyBuilder({
   mode,
   onClose,
   onSubmit,
+  submitting = false,
   accountPositions,
   initialName = '新策略',
   initialBenchmark = '000300',
@@ -181,25 +197,39 @@ function StrategyBuilder({
 
   const applyRecognizedHoldings = (items = []) => {
     if (!Array.isArray(items) || items.length === 0) return;
-    const merged = new Map();
-    rows.forEach((r) => {
-      const code = String(r.code || '').trim();
-      if (!code) return;
-      merged.set(code, { ...r });
-    });
+    const recognized = new Map();
     items.forEach((it) => {
       const code = String(it?.code || '').trim();
       if (!code) return;
-      const prev = merged.get(code) || makeRow();
       const weightPct = Number(it?.weight_pct);
-      merged.set(code, {
-        ...prev,
+      recognized.set(code, {
+        ...makeRow(),
         code,
-        name: it?.name || prev.name || '',
-        weight: Number.isFinite(weightPct) && weightPct > 0 ? String(weightPct.toFixed(2)) : (prev.weight || ''),
+        name: it?.name || '',
+        weight: Number.isFinite(weightPct) && weightPct > 0 ? String(weightPct.toFixed(2)) : '',
       });
     });
-    const nextRows = Array.from(merged.values());
+
+    let nextRows = Array.from(recognized.values());
+    if (isCreate) {
+      const merged = new Map();
+      rows.forEach((r) => {
+        const code = String(r.code || '').trim();
+        if (!code) return;
+        merged.set(code, { ...r });
+      });
+      nextRows.forEach((r) => {
+        const prev = merged.get(r.code);
+        merged.set(r.code, {
+          ...(prev || makeRow()),
+          ...r,
+          name: r.name || prev?.name || '',
+          weight: r.weight || prev?.weight || '',
+        });
+      });
+      nextRows = Array.from(merged.values());
+    }
+
     if (nextRows.length === 0) return;
     setRows(nextRows);
     setSelectedCodes((prev) => Array.from(new Set([...(prev || []), ...nextRows.map((x) => x.code).filter(Boolean)])));
@@ -297,6 +327,7 @@ function StrategyBuilder({
 
   const submit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     const holdings = rows
       .filter((r) => r.code.trim().length >= 5 && Number(r.weight) > 0)
       .map((r) => ({ code: r.code.trim(), weight: Number(r.weight) }));
@@ -429,10 +460,12 @@ function StrategyBuilder({
           </div>
 
           <div className="flex justify-between">
-            <button type="button" onClick={() => setStep(1)} className="px-3 py-2 border rounded-lg text-sm">上一步</button>
+            <button type="button" onClick={() => setStep(1)} className="px-3 py-2 border rounded-lg text-sm" disabled={submitting}>上一步</button>
             <div className="flex gap-2">
-              <button type="button" onClick={onClose} className="px-3 py-2 border rounded-lg text-sm">取消</button>
-              <button type="submit" className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm">{isCreate ? '创建策略' : '发布新一期并生成调仓'}</button>
+              <button type="button" onClick={onClose} className="px-3 py-2 border rounded-lg text-sm" disabled={submitting}>取消</button>
+              <button type="submit" disabled={submitting} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                {submitting ? '处理中...' : (isCreate ? '创建策略' : '发布新一期并生成调仓')}
+              </button>
             </div>
           </div>
         </div>
@@ -463,6 +496,9 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
   const [loadingBase, setLoadingBase] = useState(false);
   const [loadingPerf, setLoadingPerf] = useState(false);
   const [loadingHoldings, setLoadingHoldings] = useState(false);
+  const [submittingCreate, setSubmittingCreate] = useState(false);
+  const [submittingUpdate, setSubmittingUpdate] = useState(false);
+  const [submittingSmart, setSubmittingSmart] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -485,6 +521,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
   const [rebalanceLotSize, setRebalanceLotSize] = useState('100');
   const [rebalanceCapitalAdjust, setRebalanceCapitalAdjust] = useState('0');
   const [rebalanceTitle, setRebalanceTitle] = useState('');
+  const [refreshingBatchId, setRefreshingBatchId] = useState(null);
 
   const selectedPortfolio = useMemo(
     () => portfolios.find((p) => p.id === selectedId),
@@ -579,34 +616,47 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
   }, [isActive, selectedId, loadBase, loadPerformance, loadHoldings]);
 
   const handleCreateStrategy = async (payload) => {
-    await createStrategyPortfolio({ ...payload, account_id: currentAccount });
-    await Promise.all([loadPortfolios(), loadAccountPositions()]);
-    setCreateOpen(false);
+    if (submittingCreate) return;
+    setSubmittingCreate(true);
+    try {
+      await createStrategyPortfolio({ ...payload, account_id: currentAccount });
+      await Promise.all([loadPortfolios(), loadAccountPositions()]);
+      setCreateOpen(false);
+    } finally {
+      setSubmittingCreate(false);
+    }
   };
 
   const handleUpdateStrategy = async (payload) => {
     if (!selectedId) return;
-    await createStrategyVersion(selectedId, {
-      holdings: payload.holdings,
-      benchmark: payload.benchmark,
-      fee_rate: payload.fee_rate,
-      note: payload.note || '更新策略组合',
-      activate: true,
-      scope_codes: payload.scope_codes,
-    });
-    await generateStrategyRebalance(selectedId, {
-      account_id: currentAccount,
-      min_deviation: 0.005,
-      persist: true,
-    });
+    if (submittingUpdate) return;
+    setSubmittingUpdate(true);
+    try {
+      await createStrategyVersion(selectedId, {
+        holdings: payload.holdings,
+        benchmark: payload.benchmark,
+        fee_rate: payload.fee_rate,
+        note: payload.note || '更新策略组合',
+        activate: true,
+        scope_codes: payload.scope_codes,
+      });
+      await generateStrategyRebalance(selectedId, {
+        account_id: currentAccount,
+        min_deviation: 0.005,
+        lot_size: 100,
+        persist: true,
+      });
 
-    await Promise.all([
-      loadBase(selectedId),
-      loadPerformance(selectedId),
-      loadHoldings(selectedId),
-      loadPortfolios(),
-    ]);
-    setUpdateOpen(false);
+      await Promise.all([
+        loadBase(selectedId),
+        loadPerformance(selectedId),
+        loadHoldings(selectedId),
+        loadPortfolios(),
+      ]);
+      setUpdateOpen(false);
+    } finally {
+      setSubmittingUpdate(false);
+    }
   };
 
   const handleDeleteStrategy = async () => {
@@ -647,6 +697,21 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
       await openBatchDetailById(result.batch_id);
     } else if (b.length) {
       setSelectedBatchId(b[0].id);
+    }
+  };
+
+  const handleRefreshRebalance = async (batchId) => {
+    if (!selectedId || !batchId || refreshingBatchId) return;
+    setRefreshingBatchId(batchId);
+    try {
+      await refreshRebalanceBatch(batchId);
+      const b = await listRebalanceBatches(selectedId, currentAccount);
+      setBatches(Array.isArray(b) ? b : []);
+      await openBatchDetailById(batchId);
+    } catch (err) {
+      alert(err?.response?.data?.detail || '刷新调仓失败');
+    } finally {
+      setRefreshingBatchId(null);
     }
   };
 
@@ -938,8 +1003,8 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                         </button>
                       ))}
                     </div>
-                    <div className="h-72 min-h-[220px]">
-                      <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-72 min-h-[220px] min-w-[1px]">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={220}>
                         <LineChart data={chartData}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="date" minTickGap={28} />
@@ -1080,7 +1145,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                           {batches.map((b) => (
                             <tr key={b.id} className={`border-t ${selectedBatchId === b.id ? 'bg-blue-50/60' : ''}`}>
                               <td className="px-2 py-2">{b.title || `批次 #${b.id}`}</td>
-                              <td className="px-2 py-2">{String(b.created_at || '').slice(0, 16)}</td>
+                              <td className="px-2 py-2">{formatBeijingTime(b.created_at)}</td>
                               <td className="px-2 py-2">{getBatchTypeLabel(b.source)}</td>
                               <td className="px-2 py-2 text-right">{toNumber(b.buy_amount, 2)}</td>
                               <td className="px-2 py-2 text-right">{toNumber(b.sell_amount, 2)}</td>
@@ -1156,6 +1221,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
             mode="create"
             onClose={() => setCreateOpen(false)}
             onSubmit={handleCreateStrategy}
+            submitting={submittingCreate}
             accountPositions={accountPositions}
           />
         </Modal>
@@ -1167,6 +1233,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
             mode="update"
             onClose={() => setUpdateOpen(false)}
             onSubmit={handleUpdateStrategy}
+            submitting={submittingUpdate}
             accountPositions={accountPositions}
             initialBenchmark={detail.portfolio?.benchmark || selectedPortfolio?.benchmark || '000300'}
             initialFeeRate={String(detail.portfolio?.fee_rate ?? selectedPortfolio?.fee_rate ?? '0.001')}
@@ -1182,12 +1249,16 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
             className="space-y-4"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (submittingSmart) return;
+              setSubmittingSmart(true);
               try {
                 await handleGenerateRebalance();
                 setRebalanceTitle('');
                 setSmartOpen(false);
               } catch (err) {
                 alert(err?.response?.data?.detail || '生成调仓失败');
+              } finally {
+                setSubmittingSmart(false);
               }
             }}
           >
@@ -1239,8 +1310,10 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
               </div>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setSmartOpen(false)} className="px-3 py-2 border rounded-lg text-sm">取消</button>
-              <button type="submit" className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm">生成智能调仓批次</button>
+              <button type="button" onClick={() => setSmartOpen(false)} className="px-3 py-2 border rounded-lg text-sm" disabled={submittingSmart}>取消</button>
+              <button type="submit" disabled={submittingSmart} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                {submittingSmart ? '生成中...' : '生成智能调仓批次'}
+              </button>
             </div>
           </form>
         </Modal>
@@ -1300,7 +1373,7 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
                           {o.executed_shares ? (
                             <div>
                               <div>{toShares(o.executed_shares)} @ {toNumber(o.executed_price, 4)}</div>
-                              <div className="text-xs text-slate-400">{o.executed_at ? String(o.executed_at).slice(0, 16) : '--'}</div>
+                              <div className="text-xs text-slate-400">{o.executed_at ? formatBeijingTime(o.executed_at) : '--'}</div>
                             </div>
                           ) : (
                             <span className="text-slate-400">--</span>
@@ -1353,6 +1426,15 @@ export default function Strategy({ currentAccount = 1, isActive = false, onSelec
             )}
 
             <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => handleRefreshRebalance(currentBatch?.id)}
+                disabled={!currentBatch || currentBatch.status === 'completed' || refreshingBatchId !== null}
+                className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50"
+                title="按当前最新价格重算当前批次，不新增记录"
+              >
+                {refreshingBatchId === currentBatch?.id ? '刷新中...' : '刷新计算'}
+              </button>
               <button type="button" onClick={() => setBatchDetailOpen(false)} className="px-3 py-2 border rounded-lg text-sm">关闭</button>
               <button
                 type="button"

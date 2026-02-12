@@ -19,6 +19,7 @@ from ..services.strategy import (
     list_rebalance_orders,
     recognize_holdings_from_image,
     run_backtest,
+    refresh_rebalance_batch,
     update_portfolio_scope,
     update_rebalance_order_status,
 )
@@ -331,6 +332,36 @@ def api_list_rebalance_batches(portfolio_id: int, account_id: int = Query(..., g
 def api_complete_rebalance_batch(batch_id: int):
     try:
         return complete_rebalance_batch(batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-batches/{batch_id}/refresh")
+def api_refresh_rebalance_batch(batch_id: int):
+    try:
+        return refresh_rebalance_batch(batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/strategy/rebalance-batches/{batch_id}/refresh")
+def api_refresh_rebalance_batch_patch(batch_id: int):
+    try:
+        return refresh_rebalance_batch(batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/strategy/rebalance-batches/{batch_id}/recalc")
+def api_refresh_rebalance_batch_recalc(batch_id: int):
+    try:
+        return refresh_rebalance_batch(batch_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

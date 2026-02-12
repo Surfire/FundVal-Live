@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 from ..db import get_db_connection
-from .fund import get_combined_valuation, get_fund_history
+from .fund import get_combined_valuation, get_fund_history, normalize_asset_code
 from .account import upsert_position, remove_position
 from ..config import Config
 
@@ -48,7 +48,7 @@ def _normalize_holdings(holdings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     merged: Dict[str, float] = {}
     for item in holdings:
-        code = str(item.get("code", "")).strip()
+        code = normalize_asset_code(str(item.get("code", "")).strip())
         if not code:
             raise ValueError("holding code is required")
         w = _parse_weight(item.get("weight", 0))
@@ -64,13 +64,12 @@ def _normalize_holdings(holdings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _normalize_codes(codes: Optional[List[str]]) -> List[str]:
     if not codes:
         return []
-    out = sorted(
-        {
-            str(c).strip()
-            for c in codes
-            if str(c).strip() and len(str(c).strip()) >= 5
-        }
-    )
+    normalized = []
+    for c in codes:
+        nc = normalize_asset_code(str(c).strip())
+        if nc and len(nc) >= 5:
+            normalized.append(nc)
+    out = sorted(set(normalized))
     return out
 
 
@@ -186,14 +185,31 @@ def recognize_holdings_from_image(image_data_url: str) -> Dict[str, Any]:
         if not isinstance(item, dict):
             continue
         raw_code = str(item.get("code", "")).strip()
-        m = re.search(r"\b(\d{5,6})\b", raw_code)
-        if not m:
+        code = ""
+        # HK formats: HK3441 / 3441.HK / 03441
+        m_hk = re.search(r"\bHK\s*0*(\d{4,5})\b", raw_code, flags=re.IGNORECASE)
+        if m_hk:
+            code = normalize_asset_code(f"HK{m_hk.group(1)}")
+        if not code:
+            m_hk_dot = re.search(r"\b0*(\d{4,5})\.HK\b", raw_code, flags=re.IGNORECASE)
+            if m_hk_dot:
+                code = normalize_asset_code(f"{m_hk_dot.group(1)}.HK")
+        if not code:
+            m = re.search(r"\b(\d{5,6})\b", raw_code)
+            if m:
+                code = normalize_asset_code(m.group(1))
+        if not code:
             # Try infer from name text if code field is messy.
             joined = f"{item.get('name', '')} {raw_code}"
-            m = re.search(r"\b(\d{5,6})\b", joined)
-        if not m:
+            m_hk = re.search(r"\bHK\s*0*(\d{4,5})\b", joined, flags=re.IGNORECASE)
+            if m_hk:
+                code = normalize_asset_code(f"HK{m_hk.group(1)}")
+        if not code:
+            m = re.search(r"\b(\d{5,6})\b", f"{item.get('name', '')} {raw_code}")
+            if m:
+                code = normalize_asset_code(m.group(1))
+        if not code:
             continue
-        code = m.group(1)
 
         name = str(item.get("name", "")).strip() or _resolve_fund_name(code)
         weight_pct = _parse_float_maybe(item.get("weight_pct"))
@@ -364,15 +380,19 @@ def _fetch_account_positions(account_id: int, code_scope: Optional[List[str]] = 
     cursor = conn.cursor()
 
     if code_scope:
-        placeholders = ",".join(["?"] * len(code_scope))
         cursor.execute(
-            f"""
+            """
             SELECT code, shares, cost
             FROM positions
-            WHERE account_id = ? AND shares > 0 AND code IN ({placeholders})
+            WHERE account_id = ? AND shares > 0
             """,
-            [account_id, *code_scope],
+            (account_id,),
         )
+        wanted = {normalize_asset_code(c) for c in code_scope if normalize_asset_code(c)}
+        rows = [
+            row for row in cursor.fetchall()
+            if normalize_asset_code(str(row["code"])) in wanted
+        ]
     else:
         cursor.execute(
             """
@@ -382,10 +402,15 @@ def _fetch_account_positions(account_id: int, code_scope: Optional[List[str]] = 
             """,
             (account_id,),
         )
-
-    rows = cursor.fetchall()
+        rows = cursor.fetchall()
     conn.close()
-    return [{"code": row["code"], "shares": float(row["shares"]), "cost": float(row["cost"])} for row in rows]
+    out = []
+    for row in rows:
+        code = normalize_asset_code(str(row["code"]))
+        if not code:
+            continue
+        out.append({"code": code, "shares": float(row["shares"]), "cost": float(row["cost"])})
+    return out
 
 
 def list_portfolios(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -893,6 +918,118 @@ def generate_rebalance_orders(
             "scope_size": len(all_codes),
         },
 }
+
+
+def refresh_rebalance_batch(batch_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, portfolio_id, account_id, version_id, status, title, note
+        FROM rebalance_batches
+        WHERE id = ?
+        """,
+        (batch_id,),
+    )
+    batch = cursor.fetchone()
+    if not batch:
+        conn.close()
+        raise ValueError("batch not found")
+    if batch["status"] == "completed":
+        conn.close()
+        raise ValueError("该批次已归档，无法刷新")
+
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM rebalance_orders
+        WHERE batch_id = ? AND action IN ('buy','sell') AND status != 'suggested'
+        """,
+        (batch_id,),
+    )
+    edited_count = int(cursor.fetchone()["cnt"] or 0)
+    if edited_count > 0:
+        conn.close()
+        raise ValueError("该批次已有执行/跳过记录，无法整批刷新")
+
+    params = {"min_deviation": 0.005, "lot_size": 100, "capital_adjustment": 0.0}
+    try:
+        note_obj = json.loads(batch["note"] or "{}")
+        if isinstance(note_obj, dict):
+            if note_obj.get("min_deviation") is not None:
+                params["min_deviation"] = float(note_obj.get("min_deviation"))
+            if note_obj.get("lot_size") is not None:
+                params["lot_size"] = int(max(1, round(float(note_obj.get("lot_size")))))
+            if note_obj.get("capital_adjustment") is not None:
+                params["capital_adjustment"] = float(note_obj.get("capital_adjustment"))
+    except Exception:
+        pass
+    if params["lot_size"] <= 1:
+        params["lot_size"] = 100
+
+    calc = generate_rebalance_orders(
+        portfolio_id=int(batch["portfolio_id"]),
+        account_id=int(batch["account_id"]),
+        min_deviation=float(params["min_deviation"]),
+        lot_size=int(params["lot_size"]),
+        capital_adjustment=float(params["capital_adjustment"]),
+        batch_title=str(batch["title"] or "").strip() or "智能调仓批次",
+        persist=False,
+    )
+    orders = calc.get("orders", [])
+    actionable_count = int(calc.get("summary", {}).get("actionable_count", 0) or 0)
+
+    try:
+        cursor.execute("DELETE FROM rebalance_orders WHERE batch_id = ?", (batch_id,))
+        cursor.executemany(
+            """
+            INSERT INTO rebalance_orders (
+                portfolio_id, version_id, account_id, fund_code, fund_name,
+                action, target_weight, current_weight, target_shares,
+                current_shares, delta_shares, price, trade_amount, fee, status, batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    int(batch["portfolio_id"]),
+                    int(batch["version_id"]),
+                    int(batch["account_id"]),
+                    item["fund_code"],
+                    item["fund_name"],
+                    item["action"],
+                    item["target_weight"],
+                    item["current_weight"],
+                    item["target_shares"],
+                    item["current_shares"],
+                    item["delta_shares"],
+                    item["price"],
+                    item["trade_amount"],
+                    item["fee"],
+                    "skipped" if item["action"] == "hold" else "suggested",
+                    int(batch_id),
+                )
+                for item in orders
+            ],
+        )
+        if actionable_count == 0:
+            cursor.execute(
+                "UPDATE rebalance_batches SET status='completed', completed_at=CURRENT_TIMESTAMP, note=? WHERE id = ?",
+                (json.dumps(params, ensure_ascii=False), batch_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE rebalance_batches SET status='pending', completed_at=NULL, note=? WHERE id = ?",
+                (json.dumps(params, ensure_ascii=False), batch_id),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    _invalidate_perf_cache(int(batch["portfolio_id"]))
+    return {"ok": True, "batch_id": int(batch_id), "actionable_count": actionable_count}
 
 
 def list_rebalance_orders(

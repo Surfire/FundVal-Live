@@ -317,6 +317,29 @@ export const completeRebalanceBatch = async (batchId) => {
     return response.data;
 };
 
+export const refreshRebalanceBatch = async (batchId) => {
+    try {
+        const response = await api.post(`/strategy/rebalance-batches/${batchId}/refresh`);
+        return response.data;
+    } catch (error) {
+        const status = error?.response?.status;
+        if (status === 404 || status === 405) {
+            try {
+                const response = await api.patch(`/strategy/rebalance-batches/${batchId}/refresh`);
+                return response.data;
+            } catch (error2) {
+                const status2 = error2?.response?.status;
+                if (status2 === 404 || status2 === 405) {
+                    const response = await api.post(`/strategy/rebalance-batches/${batchId}/recalc`);
+                    return response.data;
+                }
+                throw error2;
+            }
+        }
+        throw error;
+    }
+};
+
 export const getBacktestPromptPresets = async () => {
     const response = await api.get('/ai/backtest-prompts');
     return response.data.prompts || [];
